@@ -21,7 +21,12 @@ fn main() {
 
 fn pong(mut stream: TcpStream) -> std::io::Result<()> {
     let mut buf = [0u8; 256];
-    stream.read(&mut buf)?;
-    stream.write(PONG)?;
+    loop {
+        let bytes_read = stream.read(&mut buf)?;
+        if bytes_read == 0 {
+            break;
+        }
+        stream.write(PONG)?;
+    }
     Ok(())
 }
