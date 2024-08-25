@@ -1,4 +1,5 @@
 use std::io::{Read, Write};
+use std::thread;
 use std::net::{TcpListener, TcpStream};
 
 const PONG: &[u8; 7] = b"+PONG\r\n";
@@ -10,7 +11,7 @@ fn main() {
         match stream {
             Ok(stream) => {
                 println!("accepted new connection");
-                pong(stream).expect("Error handling connection");
+                thread::spawn(|| pong(stream).expect("Error handling connection"));
             }
             Err(e) => {
                 println!("error: {}", e);
