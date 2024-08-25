@@ -26,7 +26,7 @@ fn pong(mut stream: TcpStream) -> std::io::Result<()> {
         if bytes_read == 0 {
             break;
         }
-        stream.write(PONG)?;
+        stream.write_all(PONG)?;
     }
     Ok(())
 }
