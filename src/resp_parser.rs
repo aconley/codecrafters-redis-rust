@@ -31,18 +31,36 @@ impl<'a> RespValue<'a> {
             RespValue::SimpleString(ref contents) => {
                 writer.write_all(&[b'+'])?;
                 writer.write_all(contents)?;
+                writer.write_all(SEPARATOR)?;
             }
             RespValue::SimpleError(ref contents) => {
                 writer.write_all(&[b'-'])?;
                 writer.write_all(contents)?;
+                writer.write_all(SEPARATOR)?;
             }
             RespValue::SimpleInteger(value) => {
                 writer.write_all(&[b':'])?;
                 writer.write_all(value.to_string().as_bytes())?;
+                writer.write_all(SEPARATOR)?;
             }
-            _ => todo!("implement others"),
+            RespValue::BulkString(ref contents) => {
+                writer.write_all(&[b'$'])?;
+                writer.write_all(format!("{}", contents.len()).as_bytes())?;
+                writer.write_all(SEPARATOR)?;
+                writer.write_all(contents)?;
+                writer.write_all(SEPARATOR)?;
+            }
+            RespValue::NullBulkString => writer.write_all(b"$-1\r\n")?,
+            RespValue::Array(vals) => {
+                writer.write_all(&[b'*'])?;
+                writer.write_all(format!("{}", vals.len()).as_bytes())?;
+                writer.write_all(SEPARATOR)?;
+                for val in vals {
+                    val.write(writer)?;
+                }
+            }
+            RespValue::NullArray => writer.write_all(b"*-1\r\n")?,
         }
-        writer.write_all(SEPARATOR)?;
         Ok(())
     }
 }
@@ -80,16 +98,23 @@ impl<'a> RespParser<'a> {
         if word.len() == 0 {
             return Err(RespError::UnexpectedEnd);
         }
-        let resp_value = match word[0] {
-            b'+' => RespValue::SimpleString(&word[1..]),
-            b'-' => RespValue::SimpleError(&word[1..]),
-            b':' => parse_integer(&word[1..])?,
-            _ => return Err(RespError::UnknownStartingByte(word[0])),
-        };
-        Ok(RespParseStep {
-            value: resp_value,
-            remainder,
-        })
+        match word[0] {
+            b'+' => Ok(RespParseStep {
+                value: RespValue::SimpleString(&word[1..]),
+                remainder,
+            }),
+            b'-' => Ok(RespParseStep {
+                value: RespValue::SimpleError(&word[1..]),
+                remainder,
+            }),
+            b':' => Ok(RespParseStep {
+                value: RespValue::SimpleInteger(self.parse_integer(&word[1..])?),
+                remainder,
+            }),
+            b'$' => self.parse_bulk_string(&word[1..], remainder),
+            b'*' => self.parse_array(&word[1..], remainder),
+            _ => Err(RespError::UnknownStartingByte(word[0])),
+        }
     }
 
     /// Extracts the next word from the input, returning the contents and a slice to the
@@ -105,12 +130,57 @@ impl<'a> RespParser<'a> {
             None => Err(RespError::UnexpectedEnd),
         }
     }
-}
 
-fn parse_integer(input: &[u8]) -> Result<RespValue, RespError> {
-    match std::str::from_utf8(input) {
-        Ok(val) => Ok(RespValue::SimpleInteger(i64::from_str_radix(val, 10)?)),
-        Err(err) => Err(RespError::IntParseFailure(None)),
+    fn parse_integer(&self, input: &[u8]) -> Result<i64, RespError> {
+        match std::str::from_utf8(input) {
+            Ok(val) => Ok(i64::from_str_radix(val, 10)?),
+            Err(_) => Err(RespError::IntParseFailure(None)),
+        }
+    }
+
+    fn parse_bulk_string<'b>(&self, input: &'b [u8], remainder: &'b [u8]) -> RespResult<'b> {
+        let size = self.parse_integer(input)?;
+        if size < -1 {
+            Err(RespError::BadBulkStringSize(size))
+        } else if size == -1 {
+            Ok(RespParseStep {
+                value: RespValue::NullBulkString,
+                remainder,
+            })
+        } else if (size as usize) > (remainder.len() - 2) {
+            Err(RespError::UnexpectedEnd)
+        } else if &remainder[(size as usize)..(size as usize + 2)] != SEPARATOR {
+            Err(RespError::BadBulkStringSize(size))
+        } else {
+            Ok(RespParseStep {
+                value: RespValue::BulkString(&remainder[0..(size as usize)]),
+                remainder: &remainder[(size as usize) + 2..],
+            })
+        }
+    }
+
+    fn parse_array<'b>(&self, input: &'b [u8], remainder: &'b [u8]) -> RespResult<'b> {
+        let size = self.parse_integer(input)?;
+        if size < -1 {
+            Err(RespError::BadArraySize(size))
+        } else if size == -1 {
+            Ok(RespParseStep {
+                value: RespValue::NullArray,
+                remainder,
+            })
+        } else {
+            let mut vals = Vec::with_capacity(size as usize);
+            let mut curr_remainder = remainder;
+            for _ in 0..size {
+                let RespParseStep { value, remainder } = self.next_value(&curr_remainder)?;
+                vals.push(value);
+                curr_remainder = remainder;
+            }
+            Ok(RespParseStep {
+                value: RespValue::Array(vals),
+                remainder: &curr_remainder,
+            })
+        }
     }
 }
 
@@ -221,6 +291,81 @@ mod tests {
     }
 
     #[test]
+    fn parses_bulk_string() {
+        let parser = RespParser::new();
+        let parsed = parser.next_value(b"$13\r\nImABulkString\r\n");
+        assert!(
+            parsed.is_ok(),
+            "Expected ok result, got: {}",
+            parsed.err().unwrap()
+        );
+        assert_eq!(
+            parsed.unwrap(),
+            RespParseStep {
+                value: RespValue::BulkString(b"ImABulkString"),
+                remainder: &[]
+            }
+        );
+    }
+
+    #[test]
+    fn parses_null_bulk_string() {
+        let parser = RespParser::new();
+        let parsed = parser.next_value(b"$-1\r\n");
+        assert!(
+            parsed.is_ok(),
+            "Expected ok result, got: {}",
+            parsed.err().unwrap()
+        );
+        assert_eq!(
+            parsed.unwrap(),
+            RespParseStep {
+                value: RespValue::NullBulkString,
+                remainder: &[]
+            }
+        );
+    }
+
+    #[test]
+    fn parses_array() {
+        let parser = RespParser::new();
+        let parsed = parser.next_value(b"*2\r\n+OK\r\n$3\r\nBlk\r\n");
+        assert!(
+            parsed.is_ok(),
+            "Expected ok result, got: {}",
+            parsed.err().unwrap()
+        );
+        assert_eq!(
+            parsed.unwrap(),
+            RespParseStep {
+                value: RespValue::Array(vec![
+                    RespValue::SimpleString(b"OK"),
+                    RespValue::BulkString(b"Blk")
+                ]),
+                remainder: &[]
+            }
+        );
+    }
+
+    #[test]
+    fn parses_null_array() {
+        let parser = RespParser::new();
+        let parsed = parser.next_value(b"*-1\r\n");
+        assert!(
+            parsed.is_ok(),
+            "Expected ok result, got: {}",
+            parsed.err().unwrap()
+        );
+        assert_eq!(
+            parsed.unwrap(),
+            RespParseStep {
+                value: RespValue::NullArray,
+                remainder: &[]
+            }
+        );
+    }
+
+    #[test]
     fn parse_leaves_remainder() {
         let parser = RespParser::new();
         let parsed = parser.next_value(b"-SomeError\r\nStuffAfterError");
@@ -269,14 +414,214 @@ mod tests {
     }
 
     #[test]
+    fn writes_bulk_string() {
+        let value = RespValue::BulkString(b"ImABulkString");
+
+        let mut buffer = Vec::new();
+        assert!(value.write(&mut buffer).is_ok());
+
+        assert_eq!(buffer, b"$13\r\nImABulkString\r\n");
+    }
+
+    #[test]
+    fn writes_null_bulk_string() {
+        let value = RespValue::NullBulkString;
+
+        let mut buffer = Vec::new();
+        assert!(value.write(&mut buffer).is_ok());
+
+        assert_eq!(buffer, b"$-1\r\n");
+    }
+
+    #[test]
+    fn writes_array() {
+        let value = RespValue::Array(vec![
+            RespValue::SimpleString(b"hello"),
+            RespValue::SimpleError(b"error"),
+        ]);
+
+        let mut buffer = Vec::new();
+        assert!(value.write(&mut buffer).is_ok());
+
+        assert_eq!(buffer, b"*2\r\n+hello\r\n-error\r\n");
+    }
+
+    #[test]
+    fn writes_null_array() {
+        let value = RespValue::NullArray;
+
+        let mut buffer = Vec::new();
+        assert!(value.write(&mut buffer).is_ok());
+
+        assert_eq!(buffer, b"*-1\r\n");
+    }
+
+    #[test]
+    fn round_trips_simple_string() {
+        let value = RespValue::SimpleString(b"string");
+
+        let mut buffer = Vec::new();
+        assert!(value.write(&mut buffer).is_ok());
+
+        let parser = RespParser::new();
+        let round_tripped_value = parser.next_value(&buffer);
+        assert!(round_tripped_value.is_ok());
+
+        assert!(matches!(
+            round_tripped_value.unwrap(),
+            RespParseStep {
+                value,
+                remainder: &[]
+            }
+        ));
+    }
+
+    #[test]
+    fn round_trips_simple_error() {
+        let value = RespValue::SimpleError(b"err");
+
+        let mut buffer = Vec::new();
+        assert!(value.write(&mut buffer).is_ok());
+
+        let parser = RespParser::new();
+        let round_tripped_value = parser.next_value(&buffer);
+        assert!(round_tripped_value.is_ok());
+
+        assert!(matches!(
+            round_tripped_value.unwrap(),
+            RespParseStep {
+                value,
+                remainder: &[]
+            }
+        ));
+    }
+
+    #[test]
+    fn round_trips_simple_int() {
+        let value = RespValue::SimpleInteger(202034);
+
+        let mut buffer = Vec::new();
+        assert!(value.write(&mut buffer).is_ok());
+
+        let parser = RespParser::new();
+        let round_tripped_value = parser.next_value(&buffer);
+        assert!(round_tripped_value.is_ok());
+
+        assert!(matches!(
+            round_tripped_value.unwrap(),
+            RespParseStep {
+                value,
+                remainder: &[]
+            }
+        ));
+    }
+
+    #[test]
+    fn round_trips_bulk_string() {
+        let value = RespValue::BulkString(b"IAmABulkStringMyFriend");
+
+        let mut buffer = Vec::new();
+        assert!(value.write(&mut buffer).is_ok());
+
+        let parser = RespParser::new();
+        let round_tripped_value = parser.next_value(&buffer);
+        assert!(
+            round_tripped_value.is_ok(),
+            "Expected successful round trip, got {:?}",
+            round_tripped_value.unwrap_err()
+        );
+
+        assert!(matches!(
+            round_tripped_value.unwrap(),
+            RespParseStep {
+                value,
+                remainder: &[]
+            }
+        ));
+    }
+
+    #[test]
+    fn round_trips_null_bulk_string() {
+        let value = RespValue::NullBulkString;
+
+        let mut buffer = Vec::new();
+        assert!(value.write(&mut buffer).is_ok());
+
+        let parser = RespParser::new();
+        let round_tripped_value = parser.next_value(&buffer);
+        assert!(
+            round_tripped_value.is_ok(),
+            "Expected successful round trip, got {:?}",
+            round_tripped_value.unwrap_err()
+        );
+
+        assert!(matches!(
+            round_tripped_value.unwrap(),
+            RespParseStep {
+                value,
+                remainder: &[]
+            }
+        ));
+    }
+
+    #[test]
+    fn round_trips_array() {
+        let value = RespValue::Array(vec![
+            RespValue::BulkString(b"Blk"),
+            RespValue::SimpleInteger(22),
+            RespValue::NullArray,
+        ]);
+
+        let mut buffer = Vec::new();
+        assert!(value.write(&mut buffer).is_ok());
+
+        let parser = RespParser::new();
+        let round_tripped_value = parser.next_value(&buffer);
+        assert!(
+            round_tripped_value.is_ok(),
+            "Expected successful round trip, got {:?}",
+            round_tripped_value.unwrap_err()
+        );
+
+        assert!(matches!(
+            round_tripped_value.unwrap(),
+            RespParseStep {
+                value,
+                remainder: &[]
+            }
+        ));
+    }
+
+    #[test]
+    fn round_trips_null_array() {
+        let value = RespValue::NullArray;
+
+        let mut buffer = Vec::new();
+        assert!(value.write(&mut buffer).is_ok());
+
+        let parser = RespParser::new();
+        let round_tripped_value = parser.next_value(&buffer);
+        assert!(
+            round_tripped_value.is_ok(),
+            "Expected successful round trip, got {:?}",
+            round_tripped_value.unwrap_err()
+        );
+
+        assert!(matches!(
+            round_tripped_value.unwrap(),
+            RespParseStep {
+                value,
+                remainder: &[]
+            }
+        ));
+    }
+
+    #[test]
     fn missing_separator_is_error() {
         let parser = RespParser::new();
         let resp = parser.next_value(b"+OK");
         assert!(resp.is_err());
-        assert!(matches!(
-            resp.unwrap_err(),
-            RespError::UnexpectedEnd
-        ));
+        assert!(matches!(resp.unwrap_err(), RespError::UnexpectedEnd));
     }
 
     #[test]
@@ -295,9 +640,84 @@ mod tests {
         let parser = RespParser::new();
         let resp = parser.next_value(b":12uhoh33\r\n");
         assert!(resp.is_err(), "Expected error");
+        assert!(matches!(resp.unwrap_err(), RespError::IntParseFailure(_)));
+    }
+
+    #[test]
+    fn unterminated_bulk_string() {
+        let parser = RespParser::new();
+        let parsed = parser.next_value(b"$26\r\nImAnUnterminatedBulkString");
+        assert!(parsed.is_err(), "Expected error");
+        let err = parsed.unwrap_err();
+        assert!(
+            matches!(err, RespError::UnexpectedEnd),
+            "Expected unexpected end, got {:?}",
+            err
+        );
+    }
+
+    #[test]
+    fn incorrect_bulk_string_length() {
+        let parser = RespParser::new();
+        let parsed = parser.next_value(b"$13\r\nLongerThanExpectedBulkString\r\n");
+        assert!(parsed.is_err(), "Expected error");
+        let err = parsed.unwrap_err();
+        assert!(
+            matches!(err, RespError::BadBulkStringSize(13)),
+            "Expected unexpected end, got {:?}",
+            err
+        );
+    }
+
+    #[test]
+    fn bad_bulk_string_length() {
+        let parser = RespParser::new();
+        let parsed = parser.next_value(b"$-5\r\n");
+        assert!(parsed.is_err(), "Expected error");
         assert!(matches!(
-            resp.unwrap_err(),
-            RespError::IntParseFailure(_)
+            parsed.unwrap_err(),
+            RespError::BadBulkStringSize(-5)
         ));
     }
+
+    #[test]
+    fn truncated_bulk_string() {
+        let parser = RespParser::new();
+        let parsed = parser.next_value(b"$3\r\nAb");
+        assert!(parsed.is_err(), "Expected error");
+        assert!(matches!(parsed.unwrap_err(), RespError::UnexpectedEnd));
+    }
+
+    #[test]
+    fn unterminated_array() {
+        let parser = RespParser::new();
+        let parsed = parser.next_value(b"*2\r\n+OK\r\n-Err");
+        assert!(parsed.is_err(), "Expected error");
+        let err = parsed.unwrap_err();
+        assert!(
+            matches!(err, RespError::UnexpectedEnd),
+            "Expected unexpected end, got {:?}",
+            err
+        );
+    }
+
+    #[test]
+    fn bad_bulk_array_length() {
+        let parser = RespParser::new();
+        let parsed = parser.next_value(b"*-5\r\n");
+        assert!(parsed.is_err(), "Expected error");
+        assert!(matches!(
+            parsed.unwrap_err(),
+            RespError::BadArraySize(-5)
+        ));
+    }
+
+    #[test]
+    fn truncated_array() {
+        let parser = RespParser::new();
+        let parsed = parser.next_value(b"*2\r\n+OK\r\n");
+        assert!(parsed.is_err(), "Expected error");
+        assert!(matches!(parsed.unwrap_err(), RespError::UnexpectedEnd));
+    }
+
 }
