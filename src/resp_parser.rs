@@ -110,7 +110,7 @@ impl<'a> RespParser<'a> {
         let mut resp_values = Vec::new();
         let mut curr_remainder = input;
         while !curr_remainder.is_empty() {
-            let RespParseStep{value, remainder} = self.next_value(curr_remainder)?;
+            let RespParseStep { value, remainder } = self.next_value(curr_remainder)?;
             resp_values.push(value);
             curr_remainder = remainder;
         }
@@ -422,7 +422,6 @@ mod tests {
             parsed.unwrap(),
             vec![RespValue::SimpleString(b"OK"), RespValue::SimpleInteger(33)]
         );
- 
     }
 
     #[test]
