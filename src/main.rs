@@ -1,6 +1,7 @@
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
+mod resp_command;
 mod resp_parser;
 
 const IP_PORT: &str = "127.0.0.1:6379";

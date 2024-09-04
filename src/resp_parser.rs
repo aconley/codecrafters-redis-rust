@@ -26,7 +26,7 @@ pub(crate) enum RespError {
 }
 
 impl<'a> RespValue<'a> {
-    pub fn write<W: std::io::Write>(&self, writer: &mut W) -> Result<(), RespError> {
+    pub(crate) fn write<W: std::io::Write>(&self, writer: &mut W) -> Result<(), RespError> {
         match self {
             RespValue::SimpleString(ref contents) => {
                 writer.write_all(&[b'+'])?;
@@ -63,9 +63,21 @@ impl<'a> RespValue<'a> {
         }
         Ok(())
     }
+
+    pub(crate) fn type_string(&self) -> String {
+        match self {
+            RespValue::SimpleString(_) => "SimpleString".to_string(),
+            RespValue::SimpleError(_) => "SimpleError".to_string(),
+            RespValue::SimpleInteger(_) => "SimpleInteger".to_string(),
+            RespValue::BulkString(_) => "BulkString".to_string(),
+            RespValue::NullBulkString => "NullBulkString".to_string(),
+            RespValue::Array(_) => "Array".to_string(),
+            RespValue::NullArray => "NullArray".to_string(),
+        }
+    }
 }
 
-struct RespParser<'a> {
+pub(crate) struct RespParser<'a> {
     finder: memchr::memmem::Finder<'a>,
 }
 
@@ -85,10 +97,24 @@ pub(crate) struct RespParseStep<'a> {
 type RespResult<'a> = Result<RespParseStep<'a>, RespError>;
 
 impl<'a> RespParser<'a> {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         RespParser {
             finder: memchr::memmem::Finder::new(SEPARATOR),
         }
+    }
+
+    pub(crate) fn get_values<'b>(&self, input: &'b [u8]) -> Result<Vec<RespValue<'b>>, RespError> {
+        if input.len() == 0 {
+            return Ok(Vec::new());
+        }
+        let mut resp_values = Vec::new();
+        let mut curr_remainder = input;
+        while !curr_remainder.is_empty() {
+            let RespParseStep{value, remainder} = self.next_value(curr_remainder)?;
+            resp_values.push(value);
+            curr_remainder = remainder;
+        }
+        Ok(resp_values)
     }
 
     // Extracts the next RespValue from the input, returning the value and
@@ -381,6 +407,22 @@ mod tests {
                 remainder: b"StuffAfterError"
             }
         );
+    }
+
+    #[test]
+    fn get_values() {
+        let parser = RespParser::new();
+        let parsed = parser.get_values(b"+OK\r\n:33\r\n");
+        assert!(
+            parsed.is_ok(),
+            "Expected ok result, got: {}",
+            parsed.err().unwrap()
+        );
+        assert_eq!(
+            parsed.unwrap(),
+            vec![RespValue::SimpleString(b"OK"), RespValue::SimpleInteger(33)]
+        );
+ 
     }
 
     #[test]
@@ -706,10 +748,7 @@ mod tests {
         let parser = RespParser::new();
         let parsed = parser.next_value(b"*-5\r\n");
         assert!(parsed.is_err(), "Expected error");
-        assert!(matches!(
-            parsed.unwrap_err(),
-            RespError::BadArraySize(-5)
-        ));
+        assert!(matches!(parsed.unwrap_err(), RespError::BadArraySize(-5)));
     }
 
     #[test]
@@ -719,5 +758,4 @@ mod tests {
         assert!(parsed.is_err(), "Expected error");
         assert!(matches!(parsed.unwrap_err(), RespError::UnexpectedEnd));
     }
-
 }
