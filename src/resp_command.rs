@@ -1,3 +1,4 @@
+
 use crate::resp_parser::{RespError, RespParser, RespValue};
 /// Redis commands parsed from RESP.
 
@@ -5,11 +6,15 @@ use crate::resp_parser::{RespError, RespParser, RespValue};
 pub(crate) enum RedisRequest<'a> {
     Ping,
     Echo(&'a [u8]),
+    Set { key: &'a [u8], value: &'a [u8] },
+    Get(&'a [u8]),
 }
 
 pub(crate) enum RedisResponse<'a> {
+    Ok,
     Pong,
     EchoResponse(&'a [u8]),
+    GetResult(Option<&'a [u8]>),
 }
 
 #[derive(Debug)]
@@ -19,16 +24,20 @@ pub(crate) enum RedisError {
     UnknownRequest(String),
     UnexpectedNumberOfArgs(String),
     UnexpectedArgumentType(String),
+    DataAccessError(String),
 }
 
 impl<'a> RedisResponse<'a> {
     pub(crate) fn write<W: std::io::Write>(&self, writer: &mut W) -> Result<(), RespError> {
-        match self {
-            RedisResponse::Pong => RespValue::SimpleString(b"PONG").write(writer)?,
-            RedisResponse::EchoResponse(contents) => {
-                RespValue::BulkString(contents).write(writer)?
-            }
+        let response_value = match self {
+            RedisResponse::Ok => RespValue::SimpleString(b"OK"),
+            RedisResponse::Pong => RespValue::SimpleString(b"PONG"),
+            RedisResponse::EchoResponse(contents) => 
+                RespValue::BulkString(contents),
+            RedisResponse::GetResult(Some(value)) => RespValue::BulkString(value),
+            RedisResponse::GetResult(None) => RespValue::NullBulkString,
         };
+        response_value.write(writer)?;
         Ok(())
     }
 }
@@ -58,6 +67,8 @@ fn parse_command<'a>(value: RespValue<'a>) -> Result<RedisRequest<'a>, RedisErro
                     match &contents_upper[..] {
                         b"PING" => parse_ping(&values[1..]),
                         b"ECHO" => parse_echo(&values[1..]),
+                        b"SET" => parse_set(&values[1..]),
+                        b"GET" => parse_get(&values[1..]),
                         _ => Err(RedisError::UnknownRequest(format!(
                             "Unexpected command name {}",
                             String::from_utf8_lossy(&contents_upper)
@@ -105,6 +116,44 @@ fn parse_echo<'a>(values: &[RespValue<'a>]) -> Result<RedisRequest<'a>, RedisErr
     }
 }
 
+fn parse_set<'a>(values: &[RespValue<'a>]) -> Result<RedisRequest<'a>, RedisError> {
+    if values.len() != 2 {
+        Err(RedisError::UnexpectedNumberOfArgs(format!(
+            "For ECHO expected 2 args found {}",
+            values.len()
+        )))
+    } else {
+        match (&values[0], &values[1]) {
+            (RespValue::BulkString(key), RespValue::BulkString(value)) => {
+                Ok(RedisRequest::Set { key, value })
+            }
+            _ => Err(RedisError::UnexpectedArgumentType(format!(
+                "For PUT expected arguments of type BulkString, BulkString got {},{}",
+                values[0].type_string(),
+                values[1].type_string()
+            ))),
+        }
+    }
+}
+
+fn parse_get<'a>(values: &[RespValue<'a>]) -> Result<RedisRequest<'a>, RedisError> {
+    if values.len() != 1 {
+        Err(RedisError::UnexpectedNumberOfArgs(format!(
+            "For GET expected 1 args found {}",
+            values.len()
+        )))
+    } else {
+        match values[0] {
+            RespValue::BulkString(key) => 
+                Ok(RedisRequest::Get(key)),
+            _ => Err(RedisError::UnexpectedArgumentType(format!(
+                "For GET expected arguments of type BulkString, BulkString got {}",
+                values[0].type_string(),
+            ))),
+        }
+    }
+}
+
 impl std::fmt::Display for RedisError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -117,6 +166,7 @@ impl std::fmt::Display for RedisError {
             RedisError::UnexpectedArgumentType(val) => {
                 write!(f, "Unexpected argument type: {}", val)
             }
+            RedisError::DataAccessError(val) => write!(f, "Data access error: {}", val),
         }
     }
 }
@@ -132,6 +182,13 @@ impl From<std::io::Error> for RedisError {
 impl From<RespError> for RedisError {
     fn from(from: RespError) -> Self {
         RedisError::RespParseError(from)
+    }
+}
+
+// The only mutex is around the data, so this indicates a data access error.
+impl<T> From<std::sync::PoisonError<T>> for RedisError {
+    fn from(from: std::sync::PoisonError<T>) -> Self {
+        RedisError::DataAccessError(format!("{:?}", from))
     }
 }
 
@@ -216,6 +273,37 @@ mod tests {
             parsed.unwrap_err(),
             RedisError::UnexpectedArgumentType(_)
         ));
+    }
+
+    #[test]
+    fn parse_set() {
+        let echo_value = RespValue::Array(vec![
+            RespValue::BulkString(b"SET"),
+            RespValue::BulkString(b"key"),
+            RespValue::BulkString(b"contents"),
+        ]);
+        let parsed = parse_command(echo_value);
+        assert!(
+            parsed.is_ok(),
+            "Expected ok result, got: {}",
+            parsed.err().unwrap()
+        );
+        assert!(matches!(parsed.unwrap(), RedisRequest::Set{key: b"key", value: b"contents"}));
+    }
+
+    #[test]
+    fn parse_get() {
+        let echo_value = RespValue::Array(vec![
+            RespValue::BulkString(b"GET"),
+            RespValue::BulkString(b"key"),
+        ]);
+        let parsed = parse_command(echo_value);
+        assert!(
+            parsed.is_ok(),
+            "Expected ok result, got: {}",
+            parsed.err().unwrap()
+        );
+        assert!(matches!(parsed.unwrap(), RedisRequest::Get(b"key")));
     }
 
     #[test]
