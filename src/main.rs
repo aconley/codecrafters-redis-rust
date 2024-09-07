@@ -9,7 +9,8 @@ use crate::data_store::DataStore;
 
 const IP_PORT: &str = "127.0.0.1:6379";
 
-#[tokio::main]
+// Only use one worker thread to obey the contract of data_store::DataStore.
+#[tokio::main(worker_threads = 1)]
 async fn main() {
     let data_store = Arc::new(DataStore::new());
     let listener = TcpListener::bind(IP_PORT).await.expect("Error connecting");
@@ -21,9 +22,11 @@ async fn main() {
                 println!("accepted new connection from {}", addr);
                 let ds = data_store.clone();
                 tokio::spawn(async move {
-                    ds.handle_requests(stream)
-                        .await
-                        .expect("Error handling message");
+                    unsafe {
+                        ds.handle_requests(stream)
+                            .await
+                            .expect("Error handling message");
+                    }
                 });
             }
             Err(e) => {

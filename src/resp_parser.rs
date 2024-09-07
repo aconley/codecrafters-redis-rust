@@ -506,15 +506,15 @@ mod tests {
 
         let parser = RespParser::new();
         let round_tripped_value = parser.next_value(&buffer);
-        assert!(round_tripped_value.is_ok());
 
-        assert!(matches!(
+        assert!(round_tripped_value.is_ok());
+        assert_eq!(
             round_tripped_value.unwrap(),
             RespParseStep {
                 value,
                 remainder: &[]
             }
-        ));
+        );
     }
 
     #[test]
@@ -526,15 +526,15 @@ mod tests {
 
         let parser = RespParser::new();
         let round_tripped_value = parser.next_value(&buffer);
-        assert!(round_tripped_value.is_ok());
 
-        assert!(matches!(
+        assert!(round_tripped_value.is_ok());
+        assert_eq!(
             round_tripped_value.unwrap(),
             RespParseStep {
                 value,
                 remainder: &[]
             }
-        ));
+        );
     }
 
     #[test]
@@ -546,15 +546,15 @@ mod tests {
 
         let parser = RespParser::new();
         let round_tripped_value = parser.next_value(&buffer);
-        assert!(round_tripped_value.is_ok());
 
-        assert!(matches!(
+        assert!(round_tripped_value.is_ok());
+        assert_eq!(
             round_tripped_value.unwrap(),
             RespParseStep {
                 value,
                 remainder: &[]
             }
-        ));
+        );
     }
 
     #[test]
@@ -566,19 +566,19 @@ mod tests {
 
         let parser = RespParser::new();
         let round_tripped_value = parser.next_value(&buffer);
+
         assert!(
             round_tripped_value.is_ok(),
             "Expected successful round trip, got {:?}",
             round_tripped_value.unwrap_err()
         );
-
-        assert!(matches!(
+        assert_eq!(
             round_tripped_value.unwrap(),
             RespParseStep {
                 value,
                 remainder: &[]
             }
-        ));
+        );
     }
 
     #[test]
@@ -590,19 +590,19 @@ mod tests {
 
         let parser = RespParser::new();
         let round_tripped_value = parser.next_value(&buffer);
+
         assert!(
             round_tripped_value.is_ok(),
             "Expected successful round trip, got {:?}",
             round_tripped_value.unwrap_err()
         );
-
-        assert!(matches!(
+        assert_eq!(
             round_tripped_value.unwrap(),
             RespParseStep {
                 value,
                 remainder: &[]
             }
-        ));
+        );
     }
 
     #[test]
@@ -618,19 +618,19 @@ mod tests {
 
         let parser = RespParser::new();
         let round_tripped_value = parser.next_value(&buffer);
+
         assert!(
             round_tripped_value.is_ok(),
             "Expected successful round trip, got {:?}",
             round_tripped_value.unwrap_err()
         );
-
-        assert!(matches!(
+        assert_eq!(
             round_tripped_value.unwrap(),
             RespParseStep {
                 value,
                 remainder: &[]
             }
-        ));
+        );
     }
 
     #[test]
@@ -642,19 +642,19 @@ mod tests {
 
         let parser = RespParser::new();
         let round_tripped_value = parser.next_value(&buffer);
+
         assert!(
             round_tripped_value.is_ok(),
             "Expected successful round trip, got {:?}",
             round_tripped_value.unwrap_err()
         );
-
-        assert!(matches!(
+        assert_eq!(
             round_tripped_value.unwrap(),
             RespParseStep {
                 value,
                 remainder: &[]
             }
-        ));
+        );
     }
 
     #[test]
