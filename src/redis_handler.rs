@@ -7,17 +7,24 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::time::Instant;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
-use crate::redis_error::RedisError;
+use crate::errors::RedisError;
 use crate::resp_command::{parse_commands, RedisRequest};
 use crate::resp_parser::RespValue;
 
 // The data store for Redis.
 #[derive(Debug)]
 pub(crate) struct RedisHandler {
-    data: RefCell<HashMap<Vec<u8>, Vec<u8>>>,
+    data: RefCell<HashMap<Vec<u8>, ValueType>>,
+}
+
+#[derive(Clone, Debug)]
+struct ValueType {
+    value: Vec<u8>,
+    expiration: Option<Instant>,
 }
 
 impl RedisHandler {
@@ -70,33 +77,50 @@ impl RedisHandler {
         stream: &mut TcpStream,
     ) -> Result<(), RedisError> {
         match request {
-            RedisRequest::Ping => {
-                RespValue::SimpleString(b"PONG")
-                    .write_async(stream)
-                    .await?
-            }
+            RedisRequest::Ping => RespValue::SimpleString(b"PONG").write_async(stream).await?,
             RedisRequest::Echo(contents) => {
-                RespValue::BulkString(contents)
-                    .write_async(stream)
-                    .await?
+                RespValue::BulkString(contents).write_async(stream).await?
             }
-            RedisRequest::Set { key, value } => {
-                self.data.borrow_mut().insert(key.to_vec(), value.to_vec());
-                RespValue::SimpleString(b"OK")
-                    .write_async(stream)
-                    .await?
+            RedisRequest::Set {
+                key,
+                value,
+                expiration,
+            } => {
+                self.data.borrow_mut().insert(
+                    key.to_vec(),
+                    ValueType {
+                        value: value.to_vec(),
+                        expiration,
+                    },
+                );
+                RespValue::SimpleString(b"OK").write_async(stream).await?
             }
             RedisRequest::Get(key) => {
-                // We have to make a copy of the value, because while we are paused on the await,
-                // another future may overwrite the value for this key and invalidate the reference.
-                let value = self.data.borrow().get(key).map(|v| v.to_owned());
-                match value {
-                    Some(value) => RespValue::BulkString(&value).write_async(stream).await?,
+                // We have to make a copy of the value, because while we are paused on the await, another 
+                // future may overwrite the value for this key and invalidate the reference.
+                let value_copy = self.data.borrow().get(key).map(|v| v.to_owned());
+                match value_copy {
+                    Some(value) if value.is_expired() => {
+                        self.data.borrow_mut().remove(key);
+                        RespValue::NullBulkString.write_async(stream).await?
+                    }
+                    Some(ValueType { value, .. }) => {
+                        RespValue::BulkString(&value)
+                            .write_async(stream)
+                            .await?
+                    }
                     None => RespValue::NullBulkString.write_async(stream).await?,
                 }
             }
         }
         Ok(())
+    }
+}
+
+impl ValueType {
+    fn is_expired(&self) -> bool {
+        self.expiration
+            .map_or(false, |expiration| Instant::now() > expiration)
     }
 }
 

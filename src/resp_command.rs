@@ -1,12 +1,19 @@
-use crate::redis_error::RedisError;
+use std::time::{Duration,Instant};
+
+use crate::errors::RedisError;
 use crate::resp_parser::{RespParser, RespValue};
+use crate::utils::parse_integer;
 
 /// Redis commands parsed from RESP.
 #[derive(PartialEq, Clone, Debug)]
 pub(crate) enum RedisRequest<'a> {
     Ping,
     Echo(&'a [u8]),
-    Set { key: &'a [u8], value: &'a [u8] },
+    Set {
+        key: &'a [u8],
+        value: &'a [u8],
+        expiration: Option<Instant>,
+    },
     Get(&'a [u8]),
 }
 
@@ -30,16 +37,14 @@ fn parse_command<'a>(value: RespValue<'a>) -> Result<RedisRequest<'a>, RedisErro
             }
             match values[0] {
                 RespValue::BulkString(contents) => {
-                    let contents_upper: Vec<u8> =
-                        contents.iter().map(|u| u.to_ascii_uppercase()).collect();
-                    match &contents_upper[..] {
+                    match &uppercase(contents)[..] {
                         b"PING" => parse_ping(&values[1..]),
                         b"ECHO" => parse_echo(&values[1..]),
                         b"SET" => parse_set(&values[1..]),
                         b"GET" => parse_get(&values[1..]),
                         _ => Err(RedisError::UnknownRequest(format!(
                             "Unexpected command name {}",
-                            String::from_utf8_lossy(&contents_upper)
+                            String::from_utf8_lossy(&contents)
                         ))),
                     }
                 }
@@ -85,23 +90,45 @@ fn parse_echo<'a>(values: &[RespValue<'a>]) -> Result<RedisRequest<'a>, RedisErr
 }
 
 fn parse_set<'a>(values: &[RespValue<'a>]) -> Result<RedisRequest<'a>, RedisError> {
-    if values.len() != 2 {
-        Err(RedisError::UnexpectedNumberOfArgs(format!(
+    if values.len() != 2 && values.len() != 4 {
+        return Err(RedisError::UnexpectedNumberOfArgs(format!(
             "For ECHO expected 2 args found {}",
             values.len()
-        )))
-    } else {
-        match (&values[0], &values[1]) {
-            (RespValue::BulkString(key), RespValue::BulkString(value)) => {
-                Ok(RedisRequest::Set { key, value })
-            }
+        )));
+    };
+    if values.len() == 2 {
+        return match (&values[0], &values[1]) {
+            (RespValue::BulkString(key), RespValue::BulkString(value)) => Ok(RedisRequest::Set {
+                key,
+                value,
+                expiration: None,
+            }),
             _ => Err(RedisError::UnexpectedArgumentType(format!(
                 "For PUT expected arguments of type BulkString, BulkString got {},{}",
                 values[0].type_string(),
                 values[1].type_string()
             ))),
-        }
+        };
     }
+    // Version with expiration.
+    return match (&values[0], &values[1], &values[2], &values[3]) {
+        (RespValue::BulkString(key), 
+         RespValue::BulkString(value),
+         RespValue::BulkString(expiration_type), 
+         RespValue::BulkString(expiration_value)) => 
+            Ok(RedisRequest::Set {
+                key,
+                value,
+                expiration: Some(parse_expiration(expiration_type, expiration_value)?)
+            }),
+        _ => Err(RedisError::UnexpectedArgumentType(format!(
+            "For PUT with expriation expected arguments of type 4x BulkString, BulkString got {},{}, {}, {}",
+            values[0].type_string(),
+            values[1].type_string(),
+            values[2].type_string(),
+            values[3].type_string()
+        ))),
+    };
 }
 
 fn parse_get<'a>(values: &[RespValue<'a>]) -> Result<RedisRequest<'a>, RedisError> {
@@ -112,8 +139,7 @@ fn parse_get<'a>(values: &[RespValue<'a>]) -> Result<RedisRequest<'a>, RedisErro
         )))
     } else {
         match values[0] {
-            RespValue::BulkString(key) => 
-                Ok(RedisRequest::Get(key)),
+            RespValue::BulkString(key) => Ok(RedisRequest::Get(key)),
             _ => Err(RedisError::UnexpectedArgumentType(format!(
                 "For GET expected arguments of type BulkString, BulkString got {}",
                 values[0].type_string(),
@@ -122,10 +148,24 @@ fn parse_get<'a>(values: &[RespValue<'a>]) -> Result<RedisRequest<'a>, RedisErro
     }
 }
 
+fn uppercase(value: &[u8]) -> Vec<u8> {
+    value.iter().map(|u| u.to_ascii_uppercase()).collect()
+}
+
+fn parse_expiration(expiration_type: &[u8], expiration_value: &[u8]) -> Result<Instant, RedisError> {
+    match &uppercase(expiration_type)[..] {
+        b"PX" => Ok(Instant::now() + Duration::from_millis(parse_integer(expiration_value)? as u64)),
+        _ => Err(RedisError::UnknownRequest(
+            format!("For SET, unexpected expiry spec {}", 
+                    String::from_utf8_lossy(expiration_type)))),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::resp_parser::RespValue;
+    use crate::errors::RespError;
 
     #[test]
     fn parse_ping() {
@@ -218,8 +258,72 @@ mod tests {
             "Expected ok result, got: {}",
             parsed.err().unwrap()
         );
-        assert!(matches!(parsed.unwrap(), RedisRequest::Set{key: b"key", value: b"contents"}));
+        assert!(matches!(
+            parsed.unwrap(),
+            RedisRequest::Set {
+                key: b"key",
+                value: b"contents",
+                expiration: None
+            }
+        ));
     }
+
+    #[test]
+    fn parse_set_with_expiration() {
+        let echo_value = RespValue::Array(vec![
+            RespValue::BulkString(b"SET"),
+            RespValue::BulkString(b"key"),
+            RespValue::BulkString(b"contents"),
+            RespValue::BulkString(b"px"),
+            RespValue::BulkString(b"1000")
+        ]);
+        let parsed = parse_command(echo_value);
+        assert!(
+            parsed.is_ok(),
+            "Expected ok result, got: {}",
+            parsed.err().unwrap()
+        );
+        assert!(matches!(
+            parsed.unwrap(),
+            RedisRequest::Set {
+                key: b"key",
+                value: b"contents",
+                expiration: Some(_)
+            }
+        ));
+    }
+
+    #[test]
+    fn parse_set_with_bad_expiration_type() {
+        let echo_value = RespValue::Array(vec![
+            RespValue::BulkString(b"SET"),
+            RespValue::BulkString(b"key"),
+            RespValue::BulkString(b"contents"),
+            RespValue::BulkString(b"unknown"),
+            RespValue::BulkString(b"1000")
+        ]);
+
+        assert!(
+            matches!(parse_command(echo_value),
+            Err(RedisError::UnknownRequest(_))));
+    }
+
+    #[test]
+    fn parse_set_with_bad_expiration_value() {
+        let echo_value = RespValue::Array(vec![
+            RespValue::BulkString(b"SET"),
+            RespValue::BulkString(b"key"),
+            RespValue::BulkString(b"contents"),
+            RespValue::BulkString(b"px"),
+            RespValue::BulkString(b"not a number")
+        ]);
+
+        assert!(
+            matches!(parse_command(echo_value),
+            Err(RedisError::RespParseError(RespError::IntParseFailure(_)))));
+    }
+
+
 
     #[test]
     fn parse_get() {
@@ -265,4 +369,3 @@ mod tests {
         assert!(matches!(commands[1], RedisRequest::Ping));
     }
 }
-

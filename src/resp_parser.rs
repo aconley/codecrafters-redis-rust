@@ -2,6 +2,9 @@
 ///
 /// See: https://redis.io/docs/latest/develop/reference/protocol-spec/
 
+use crate::errors::RespError;
+use crate::utils::parse_integer;
+
 const SEPARATOR: &[u8] = b"\r\n";
 
 #[derive(PartialEq, Clone, Debug)]
@@ -13,16 +16,6 @@ pub(crate) enum RespValue<'a> {
     NullBulkString,
     Array(Vec<RespValue<'a>>),
     NullArray,
-}
-
-#[derive(Debug)]
-pub(crate) enum RespError {
-    UnexpectedEnd,
-    UnknownStartingByte(u8),
-    IOError(std::io::Error),
-    IntParseFailure(Option<std::num::ParseIntError>),
-    BadBulkStringSize(i64),
-    BadArraySize(i64),
 }
 
 impl<'a> RespValue<'a> {
@@ -179,7 +172,7 @@ impl<'a> RespParser<'a> {
                 remainder,
             }),
             b':' => Ok(RespParseStep {
-                value: RespValue::SimpleInteger(self.parse_integer(&word[1..])?),
+                value: RespValue::SimpleInteger(parse_integer(&word[1..])?),
                 remainder,
             }),
             b'$' => self.parse_bulk_string(&word[1..], remainder),
@@ -202,15 +195,8 @@ impl<'a> RespParser<'a> {
         }
     }
 
-    fn parse_integer(&self, input: &[u8]) -> Result<i64, RespError> {
-        match std::str::from_utf8(input) {
-            Ok(val) => Ok(i64::from_str_radix(val, 10)?),
-            Err(_) => Err(RespError::IntParseFailure(None)),
-        }
-    }
-
     fn parse_bulk_string<'b>(&self, input: &'b [u8], remainder: &'b [u8]) -> RespResult<'b> {
-        let size = self.parse_integer(input)?;
+        let size = parse_integer(input)?;
         if size < -1 {
             Err(RespError::BadBulkStringSize(size))
         } else if size == -1 {
@@ -231,7 +217,7 @@ impl<'a> RespParser<'a> {
     }
 
     fn parse_array<'b>(&self, input: &'b [u8], remainder: &'b [u8]) -> RespResult<'b> {
-        let size = self.parse_integer(input)?;
+        let size = parse_integer(input)?;
         if size < -1 {
             Err(RespError::BadArraySize(size))
         } else if size == -1 {
@@ -252,36 +238,6 @@ impl<'a> RespParser<'a> {
                 remainder: &curr_remainder,
             })
         }
-    }
-}
-
-impl std::fmt::Display for RespError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            RespError::UnexpectedEnd => write!(f, "Unexpected end of input stream"),
-            RespError::UnknownStartingByte(byte) => write!(f, "Unexpected starting byte {}", byte),
-            RespError::IOError(io_err) => io_err.fmt(f),
-            RespError::IntParseFailure(e) => match e {
-                Some(inner) => write!(f, "Unable to parse int {}", inner),
-                None => write!(f, "Unable to parse int"),
-            },
-            RespError::BadBulkStringSize(sz) => write!(f, "Invalid size for BulkString {}", sz),
-            RespError::BadArraySize(sz) => write!(f, "Invalid size for Array {}", sz),
-        }
-    }
-}
-
-impl std::error::Error for RespError {}
-
-impl From<std::num::ParseIntError> for RespError {
-    fn from(from: std::num::ParseIntError) -> Self {
-        RespError::IntParseFailure(Some(from))
-    }
-}
-
-impl From<std::io::Error> for RespError {
-    fn from(from: std::io::Error) -> Self {
-        RespError::IOError(from)
     }
 }
 
