@@ -1,8 +1,7 @@
 use std::time::{Duration,Instant};
 
 use crate::errors::RedisError;
-use crate::resp_parser::{RespParser, RespValue};
-use crate::utils::parse_integer;
+use crate::resp_parser::{RespParser, RespValue, parse_integer};
 
 /// Redis commands parsed from RESP.
 #[derive(PartialEq, Clone, Debug)]

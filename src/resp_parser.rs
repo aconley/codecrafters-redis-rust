@@ -3,7 +3,6 @@
 /// See: https://redis.io/docs/latest/develop/reference/protocol-spec/
 
 use crate::errors::RespError;
-use crate::utils::parse_integer;
 
 const SEPARATOR: &[u8] = b"\r\n";
 
@@ -239,6 +238,10 @@ impl<'a> RespParser<'a> {
             })
         }
     }
+}
+
+pub(crate) fn parse_integer(input: &[u8]) -> Result<i64, RespError> {
+    Ok(i64::from_str_radix(std::str::from_utf8(input)?, 10)?)
 }
 
 #[cfg(test)]

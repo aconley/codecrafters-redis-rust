@@ -2,7 +2,6 @@ mod redis_handler;
 mod errors;
 mod resp_command;
 mod resp_parser;
-mod utils;
 
 use std::sync::Arc;
 use tokio::net::TcpListener;
