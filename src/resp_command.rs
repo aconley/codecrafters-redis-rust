@@ -1,7 +1,7 @@
-
+use crate::redis_error::RedisError;
 use crate::resp_parser::{RespError, RespParser, RespValue};
-/// Redis commands parsed from RESP.
 
+/// Redis commands parsed from RESP.
 #[derive(PartialEq, Clone, Debug)]
 pub(crate) enum RedisRequest<'a> {
     Ping,
@@ -10,21 +10,12 @@ pub(crate) enum RedisRequest<'a> {
     Get(&'a [u8]),
 }
 
+// The response to a RedisRequest.
 pub(crate) enum RedisResponse<'a> {
     Ok,
     Pong,
     EchoResponse(&'a [u8]),
     GetResult(Option<&'a [u8]>),
-}
-
-#[derive(Debug)]
-pub(crate) enum RedisError {
-    RespParseError(RespError),
-    IOError(std::io::Error),
-    UnknownRequest(String),
-    UnexpectedNumberOfArgs(String),
-    UnexpectedArgumentType(String),
-    DataAccessError(String),
 }
 
 impl<'a> RedisResponse<'a> {
@@ -151,44 +142,6 @@ fn parse_get<'a>(values: &[RespValue<'a>]) -> Result<RedisRequest<'a>, RedisErro
                 values[0].type_string(),
             ))),
         }
-    }
-}
-
-impl std::fmt::Display for RedisError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            RedisError::RespParseError(inner) => write!(f, "RESP parsing error {:?}", inner),
-            RedisError::IOError(inner) => write!(f, "IOError {:?}", inner),
-            RedisError::UnknownRequest(val) => write!(f, "Unknown request: {:?}", val),
-            RedisError::UnexpectedNumberOfArgs(val) => {
-                write!(f, "Unexpected number of arguments: {}", val)
-            }
-            RedisError::UnexpectedArgumentType(val) => {
-                write!(f, "Unexpected argument type: {}", val)
-            }
-            RedisError::DataAccessError(val) => write!(f, "Data access error: {}", val),
-        }
-    }
-}
-
-impl std::error::Error for RedisError {}
-
-impl From<std::io::Error> for RedisError {
-    fn from(from: std::io::Error) -> Self {
-        RedisError::IOError(from)
-    }
-}
-
-impl From<RespError> for RedisError {
-    fn from(from: RespError) -> Self {
-        RedisError::RespParseError(from)
-    }
-}
-
-// The only mutex is around the data, so this indicates a data access error.
-impl<T> From<std::sync::PoisonError<T>> for RedisError {
-    fn from(from: std::sync::PoisonError<T>) -> Self {
-        RedisError::DataAccessError(format!("{:?}", from))
     }
 }
 

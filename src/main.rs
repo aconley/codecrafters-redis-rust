@@ -1,18 +1,19 @@
-mod data_store;
+mod redis_handler;
+mod redis_error;
 mod resp_command;
 mod resp_parser;
 
 use std::sync::Arc;
 use tokio::net::TcpListener;
 
-use crate::data_store::DataStore;
+use crate::redis_handler::RedisHandler;
 
 const IP_PORT: &str = "127.0.0.1:6379";
 
 // Only use one worker thread to obey the contract of data_store::DataStore.
 #[tokio::main(worker_threads = 1)]
 async fn main() {
-    let data_store = Arc::new(DataStore::new());
+    let handler = Arc::new(RedisHandler::new());
     let listener = TcpListener::bind(IP_PORT).await.expect("Error connecting");
 
     loop {
@@ -20,10 +21,10 @@ async fn main() {
         match stream {
             Ok((stream, addr)) => {
                 println!("accepted new connection from {}", addr);
-                let ds = data_store.clone();
+                let h = handler.clone();
                 tokio::spawn(async move {
                     unsafe {
-                        ds.handle_requests(stream)
+                        h.handle_requests(stream)
                             .await
                             .expect("Error handling message");
                     }
