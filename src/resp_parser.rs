@@ -64,6 +64,51 @@ impl<'a> RespValue<'a> {
         Ok(())
     }
 
+    pub(crate) async fn write_async<W>(&self, writer: &mut W) -> Result<(), RespError>
+    where
+        W: tokio::io::AsyncWriteExt + Unpin
+    {
+        match self {
+            RespValue::SimpleString(ref contents) => {
+                writer.write_all(&[b'+']).await?;
+                writer.write_all(contents).await?;
+                writer.write_all(SEPARATOR).await?;
+            }
+            RespValue::SimpleError(ref contents) => {
+                writer.write_all(&[b'-']).await?;
+                writer.write_all(contents).await?;
+                writer.write_all(SEPARATOR).await?;
+            }
+            RespValue::SimpleInteger(value) => {
+                writer.write_all(&[b':']).await?;
+                writer.write_all(value.to_string().as_bytes()).await?;
+                writer.write_all(SEPARATOR).await?;
+            }
+            RespValue::BulkString(ref contents) => {
+                writer.write_all(&[b'$']).await?;
+                writer
+                    .write_all(format!("{}", contents.len()).as_bytes())
+                    .await?;
+                writer.write_all(SEPARATOR).await?;
+                writer.write_all(contents).await?;
+                writer.write_all(SEPARATOR).await?;
+            }
+            RespValue::NullBulkString => writer.write_all(b"$-1\r\n").await?,
+            RespValue::Array(vals) => {
+                writer.write_all(&[b'*']).await?;
+                writer
+                    .write_all(format!("{}", vals.len()).as_bytes())
+                    .await?;
+                writer.write_all(SEPARATOR).await?;
+                for val in vals {
+                    Box::pin(val.write_async(writer)).await?;
+                }
+            }
+            RespValue::NullArray => writer.write_all(b"*-1\r\n").await?,
+        }
+        Ok(())
+    }
+
     pub(crate) fn type_string(&self) -> String {
         match self {
             RespValue::SimpleString(_) => "SimpleString".to_string(),

@@ -17,14 +17,13 @@ async fn main() {
     let listener = TcpListener::bind(IP_PORT).await.expect("Error connecting");
 
     loop {
-        let stream = listener.accept().await;
-        match stream {
-            Ok((stream, addr)) => {
+        match listener.accept().await {
+            Ok((mut stream, addr)) => {
                 println!("accepted new connection from {}", addr);
                 let h = handler.clone();
                 tokio::spawn(async move {
                     unsafe {
-                        h.handle_requests(stream)
+                        h.handle_requests(&mut stream)
                             .await
                             .expect("Error handling message");
                     }

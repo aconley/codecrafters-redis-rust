@@ -1,5 +1,5 @@
 use crate::redis_error::RedisError;
-use crate::resp_parser::{RespError, RespParser, RespValue};
+use crate::resp_parser::{RespParser, RespValue};
 
 /// Redis commands parsed from RESP.
 #[derive(PartialEq, Clone, Debug)]
@@ -8,29 +8,6 @@ pub(crate) enum RedisRequest<'a> {
     Echo(&'a [u8]),
     Set { key: &'a [u8], value: &'a [u8] },
     Get(&'a [u8]),
-}
-
-// The response to a RedisRequest.
-pub(crate) enum RedisResponse<'a> {
-    Ok,
-    Pong,
-    EchoResponse(&'a [u8]),
-    GetResult(Option<&'a [u8]>),
-}
-
-impl<'a> RedisResponse<'a> {
-    pub(crate) fn write<W: std::io::Write>(&self, writer: &mut W) -> Result<(), RespError> {
-        let response_value = match self {
-            RedisResponse::Ok => RespValue::SimpleString(b"OK"),
-            RedisResponse::Pong => RespValue::SimpleString(b"PONG"),
-            RedisResponse::EchoResponse(contents) => 
-                RespValue::BulkString(contents),
-            RedisResponse::GetResult(Some(value)) => RespValue::BulkString(value),
-            RedisResponse::GetResult(None) => RespValue::NullBulkString,
-        };
-        response_value.write(writer)?;
-        Ok(())
-    }
 }
 
 pub(crate) fn parse_commands<'a>(input: &'a [u8]) -> Result<Vec<RedisRequest<'a>>, RedisError> {
@@ -287,22 +264,5 @@ mod tests {
         assert!(matches!(commands[0], RedisRequest::Echo(b"contents")));
         assert!(matches!(commands[1], RedisRequest::Ping));
     }
-
-    #[test]
-    fn write_pong() {
-        let mut buffer = Vec::new();
-        assert!(RedisResponse::Pong.write(&mut buffer).is_ok());
-
-        assert_eq!(buffer, b"+PONG\r\n");
-    }
-
-    #[test]
-    fn write_echo() {
-        let mut buffer = Vec::new();
-        assert!(RedisResponse::EchoResponse(b"hey")
-            .write(&mut buffer)
-            .is_ok());
-
-        assert_eq!(buffer, b"$3\r\nhey\r\n");
-    }
 }
+

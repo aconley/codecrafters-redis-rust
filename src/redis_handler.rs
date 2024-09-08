@@ -11,7 +11,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
 use crate::redis_error::RedisError;
-use crate::resp_command::{parse_commands, RedisRequest, RedisResponse};
+use crate::resp_command::{parse_commands, RedisRequest};
+use crate::resp_parser::RespValue;
 
 // The data store for Redis.
 #[derive(Debug)]
@@ -32,11 +33,9 @@ impl RedisHandler {
     // contents are not protected by a lock.
     pub(crate) async unsafe fn handle_requests(
         &self,
-        mut stream: TcpStream,
+        stream: &mut TcpStream,
     ) -> Result<(), RedisError> {
         let mut input_buf = [0u8; 512];
-        // A local buffer we write to synchronously, before asynchronously dumping to the stream.
-        let mut output_buf = Vec::<u8>::new();
         loop {
             let bytes_read = stream.read(&mut input_buf).await?;
             if bytes_read == 0 {
@@ -52,45 +51,51 @@ impl RedisHandler {
             };
 
             for request in requests {
-                match self
-                    .handle_request(request, &mut stream, &mut output_buf)
-                    .await
-                {
+                match self.handle_request(request, stream).await {
                     Ok(()) => (),
                     Err(error) => {
                         let _ = stream.write_all(format!("{:?}", error).as_bytes()).await;
                         ()
                     }
                 }
-                output_buf.clear();
             }
         }
         Ok(())
     }
 
-    // Handles a single request, writing the result to the provided stream and using the intermediate
-    // output buffer.
+    // Handles a single request, writing the result to the provided stream.
     async unsafe fn handle_request<'a>(
         &self,
         request: RedisRequest<'a>,
         stream: &mut TcpStream,
-        output_buf: &mut Vec<u8>,
     ) -> Result<(), RedisError> {
         match request {
-            RedisRequest::Ping => RedisResponse::Pong.write(output_buf)?,
+            RedisRequest::Ping => {
+                RespValue::SimpleString(b"PONG")
+                    .write_async(stream)
+                    .await?
+            }
             RedisRequest::Echo(contents) => {
-                RedisResponse::EchoResponse(contents).write(output_buf)?
+                RespValue::BulkString(contents)
+                    .write_async(stream)
+                    .await?
             }
             RedisRequest::Set { key, value } => {
                 self.data.borrow_mut().insert(key.to_vec(), value.to_vec());
-                RedisResponse::Ok.write(output_buf)?
+                RespValue::SimpleString(b"OK")
+                    .write_async(stream)
+                    .await?
             }
             RedisRequest::Get(key) => {
-                RedisResponse::GetResult(self.data.borrow().get(key).map(|v| &**v))
-                    .write(output_buf)?
+                // We have to make a copy of the value, because while we are paused on the await,
+                // another future may overwrite the value for this key and invalidate the reference.
+                let value = self.data.borrow().get(key).map(|v| v.to_owned());
+                match value {
+                    Some(value) => RespValue::BulkString(&value).write_async(stream).await?,
+                    None => RespValue::NullBulkString.write_async(stream).await?,
+                }
             }
         }
-        stream.write_all(&output_buf).await?;
         Ok(())
     }
 }
