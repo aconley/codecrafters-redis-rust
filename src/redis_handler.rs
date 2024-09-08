@@ -19,7 +19,7 @@ use crate::resp_parser::RespValue;
 #[derive(Debug)]
 pub(crate) struct RedisHandler {
     data: RefCell<HashMap<Vec<u8>, ValueType>>,
-    config: RefCell<HashMap<String, String>>,
+    config: RefCell<HashMap<Vec<u8>, Vec<u8>>>,
 }
 
 #[derive(Clone, Debug)]
@@ -36,7 +36,7 @@ impl RedisHandler {
         }
     }
 
-    pub(crate) fn new_with_config(config: HashMap<String, String>) -> Self {
+    pub(crate) fn new_with_config(config: HashMap<Vec<u8>, Vec<u8>>) -> Self {
         RedisHandler {
             data: RefCell::new(HashMap::new()),
             config: RefCell::new(config),
@@ -102,7 +102,7 @@ impl RedisHandler {
                         expiration,
                     },
                 );
-                RespValue::SimpleString(b"OK").write_async(stream).await?
+                RespValue::SimpleString(b"OK").write_async(stream).await?;
             }
             RedisRequest::Get(key) => {
                 // We have to make a copy of the value, because while we are paused on the await, another
@@ -119,10 +119,30 @@ impl RedisHandler {
                     None => RespValue::NullBulkString.write_async(stream).await?,
                 }
             }
-            RedisRequest::ConfigGet(_) => {
-                RespValue::SimpleError(b"unimplemented")
-                    .write_async(stream)
-                    .await?
+            RedisRequest::ConfigGet(params) => 'config_get: {
+                if params.is_empty() {
+                    RespValue::NullArray.write_async(stream).await?;
+                    break 'config_get;
+                }
+                // We need to make a copy of all the responses for the await point.
+                let mut values = Vec::with_capacity(2 * params.len());
+                {
+                    let config = self.config.borrow();
+                    for param in params {
+                        match config.get(param) {
+                            Some(value) => {
+                                values.push(param.to_owned());
+                                values.push(value.to_owned());
+                            }
+                            None => (),
+                        }
+                    }
+                }
+                let response_array = values
+                    .iter()
+                    .map(|v| RespValue::BulkString(&*v))
+                    .collect::<Vec<_>>();
+                RespValue::Array(response_array).write_async(stream).await?
             }
         }
         Ok(())

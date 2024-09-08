@@ -1,7 +1,6 @@
 /// A minimal parser for Reddis serialization protocol messages.
 ///
 /// See: https://redis.io/docs/latest/develop/reference/protocol-spec/
-
 use crate::errors::RespError;
 
 const SEPARATOR: &[u8] = b"\r\n";
@@ -58,7 +57,7 @@ impl<'a> RespValue<'a> {
 
     pub(crate) async fn write_async<W>(&self, writer: &mut W) -> Result<(), RespError>
     where
-        W: tokio::io::AsyncWriteExt + Unpin
+        W: tokio::io::AsyncWriteExt + Unpin,
     {
         match self {
             RespValue::SimpleString(ref contents) => {

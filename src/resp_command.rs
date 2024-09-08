@@ -1,7 +1,7 @@
-use std::time::{Duration,Instant};
+use std::time::{Duration, Instant};
 
 use crate::errors::RedisError;
-use crate::resp_parser::{RespParser, RespValue, parse_integer};
+use crate::resp_parser::{parse_integer, RespParser, RespValue};
 
 /// Redis commands parsed from RESP.
 #[derive(PartialEq, Clone, Debug)]
@@ -36,19 +36,17 @@ fn parse_command<'a>(value: RespValue<'a>) -> Result<RedisRequest<'a>, RedisErro
                 return Err(RedisError::UnknownRequest("Empty array".to_string()));
             }
             match values[0] {
-                RespValue::BulkString(contents) => {
-                    match &uppercase(contents)[..] {
-                        b"PING" => parse_ping(&values[1..]),
-                        b"ECHO" => parse_echo(&values[1..]),
-                        b"SET" => parse_set(&values[1..]),
-                        b"GET" => parse_get(&values[1..]),
-                        b"CONFIG" => parse_config(&values[1..]),
-                        _ => Err(RedisError::UnknownRequest(format!(
-                            "Unexpected command name {}",
-                            String::from_utf8_lossy(&contents)
-                        ))),
-                    }
-                }
+                RespValue::BulkString(contents) => match &uppercase(contents)[..] {
+                    b"PING" => parse_ping(&values[1..]),
+                    b"ECHO" => parse_echo(&values[1..]),
+                    b"SET" => parse_set(&values[1..]),
+                    b"GET" => parse_get(&values[1..]),
+                    b"CONFIG" => parse_config(&values[1..]),
+                    _ => Err(RedisError::UnknownRequest(format!(
+                        "Unexpected command name {}",
+                        String::from_utf8_lossy(&contents)
+                    ))),
+                },
                 _ => Err(RedisError::UnknownRequest(format!(
                     "For first element of array expected BulkString got {}",
                     values[0].type_string()
@@ -113,10 +111,10 @@ fn parse_set<'a>(values: &[RespValue<'a>]) -> Result<RedisRequest<'a>, RedisErro
     }
     // Version with expiration.
     return match (&values[0], &values[1], &values[2], &values[3]) {
-        (RespValue::BulkString(key), 
+        (RespValue::BulkString(key),
          RespValue::BulkString(value),
-         RespValue::BulkString(expiration_type), 
-         RespValue::BulkString(expiration_value)) => 
+         RespValue::BulkString(expiration_type),
+         RespValue::BulkString(expiration_value)) =>
             Ok(RedisRequest::Set {
                 key,
                 value,
@@ -151,18 +149,22 @@ fn parse_get<'a>(values: &[RespValue<'a>]) -> Result<RedisRequest<'a>, RedisErro
 
 fn parse_config<'a>(values: &[RespValue<'a>]) -> Result<RedisRequest<'a>, RedisError> {
     if values.len() < 2 {
-        return Err(RedisError::UnexpectedNumberOfArgs("For CONFIG expected at least CONFIG <SUBCOMMAND>".to_string()));
+        return Err(RedisError::UnexpectedNumberOfArgs(
+            "For CONFIG expected at least CONFIG <SUBCOMMAND>".to_string(),
+        ));
     }
     match values[0] {
-        RespValue::BulkString(subcommand) =>
-        match &uppercase(subcommand)[..] {
+        RespValue::BulkString(subcommand) => match &uppercase(subcommand)[..] {
             b"GET" => parse_command_get(&values[1..]),
-            _ => Err(RedisError::UnknownRequest(format!("Unknown SUBCOMMAND after CONFIG: {}",
-            String::from_utf8_lossy(subcommand))))
-        }
+            _ => Err(RedisError::UnknownRequest(format!(
+                "Unknown SUBCOMMAND after CONFIG: {}",
+                String::from_utf8_lossy(subcommand)
+            ))),
+        },
         _ => Err(RedisError::UnexpectedArgumentType(format!(
             "For CONFIG <SUBCOMMAND>, SUBCOMMAND should have been BulkString, got {}",
-            values[0].type_string()))),
+            values[0].type_string()
+        ))),
     }
 }
 
@@ -171,10 +173,11 @@ fn parse_command_get<'a>(values: &[RespValue<'a>]) -> Result<RedisRequest<'a>, R
     for (idx, value) in values.iter().enumerate() {
         match value {
             RespValue::BulkString(param) => params.push(*param),
-            _ => return Err(RedisError::UnexpectedArgumentType(
-                format!(
+            _ => {
+                return Err(RedisError::UnexpectedArgumentType(format!(
                 "For CONFIG GET values, expected type BulkString at position {} in values got {}", 
-            idx, value.type_string()))),
+            idx, value.type_string())))
+            }
         }
     }
 
@@ -185,20 +188,26 @@ fn uppercase(value: &[u8]) -> Vec<u8> {
     value.iter().map(|u| u.to_ascii_uppercase()).collect()
 }
 
-fn parse_expiration(expiration_type: &[u8], expiration_value: &[u8]) -> Result<Instant, RedisError> {
+fn parse_expiration(
+    expiration_type: &[u8],
+    expiration_value: &[u8],
+) -> Result<Instant, RedisError> {
     match &uppercase(expiration_type)[..] {
-        b"PX" => Ok(Instant::now() + Duration::from_millis(parse_integer(expiration_value)? as u64)),
-        _ => Err(RedisError::UnknownRequest(
-            format!("For SET, unexpected expiry spec {}", 
-                    String::from_utf8_lossy(expiration_type)))),
+        b"PX" => {
+            Ok(Instant::now() + Duration::from_millis(parse_integer(expiration_value)? as u64))
+        }
+        _ => Err(RedisError::UnknownRequest(format!(
+            "For SET, unexpected expiry spec {}",
+            String::from_utf8_lossy(expiration_type)
+        ))),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::resp_parser::RespValue;
     use crate::errors::RespError;
+    use crate::resp_parser::RespValue;
 
     #[test]
     fn parse_ping() {
@@ -308,7 +317,7 @@ mod tests {
             RespValue::BulkString(b"key"),
             RespValue::BulkString(b"contents"),
             RespValue::BulkString(b"px"),
-            RespValue::BulkString(b"1000")
+            RespValue::BulkString(b"1000"),
         ]);
         let parsed = parse_command(echo_value);
         assert!(
@@ -333,12 +342,13 @@ mod tests {
             RespValue::BulkString(b"key"),
             RespValue::BulkString(b"contents"),
             RespValue::BulkString(b"unknown"),
-            RespValue::BulkString(b"1000")
+            RespValue::BulkString(b"1000"),
         ]);
 
-        assert!(
-            matches!(parse_command(echo_value),
-            Err(RedisError::UnknownRequest(_))));
+        assert!(matches!(
+            parse_command(echo_value),
+            Err(RedisError::UnknownRequest(_))
+        ));
     }
 
     #[test]
@@ -348,15 +358,14 @@ mod tests {
             RespValue::BulkString(b"key"),
             RespValue::BulkString(b"contents"),
             RespValue::BulkString(b"px"),
-            RespValue::BulkString(b"not a number")
+            RespValue::BulkString(b"not a number"),
         ]);
 
-        assert!(
-            matches!(parse_command(echo_value),
-            Err(RedisError::RespParseError(RespError::IntParseFailure(_)))));
+        assert!(matches!(
+            parse_command(echo_value),
+            Err(RedisError::RespParseError(RespError::IntParseFailure(_)))
+        ));
     }
-
-
 
     #[test]
     fn parse_get() {
@@ -381,8 +390,7 @@ mod tests {
             RespValue::BulkString(b"dir"),
         ]);
         assert!(matches!(parse_command(config_get),
-            Ok(RedisRequest::ConfigGet(params)) if matches!(params[..], [b"dir"]))
-        );
+            Ok(RedisRequest::ConfigGet(params)) if matches!(params[..], [b"dir"])));
     }
 
     #[test]
@@ -394,8 +402,7 @@ mod tests {
             RespValue::BulkString(b"max_concurrency"),
         ]);
         assert!(matches!(parse_command(values),
-            Ok(RedisRequest::ConfigGet(params)) if matches!(params[..], [b"dir", b"max_concurrency"]))
-        );
+            Ok(RedisRequest::ConfigGet(params)) if matches!(params[..], [b"dir", b"max_concurrency"])));
     }
 
     #[test]

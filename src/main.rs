@@ -1,5 +1,5 @@
-mod redis_handler;
 mod errors;
+mod redis_handler;
 mod resp_command;
 mod resp_parser;
 
@@ -14,18 +14,21 @@ const IP_PORT: &str = "127.0.0.1:6379";
 
 #[derive(Parser)]
 struct RedisArgs {
-    dir: Option<String>, 
-    dbfilename: Option<String>
+    #[arg(short, long)]
+    dir: Option<String>,
+
+    #[arg(short, long)]
+    dbfilename: Option<String>,
 }
 
 impl RedisArgs {
-    fn to_config_dict(self) -> HashMap<String, String> {
+    fn to_config_dict(self) -> HashMap<Vec<u8>, Vec<u8>> {
         let mut result = HashMap::new();
         if let Some(dir) = self.dir {
-            result.insert("dir".to_string(), dir);
+            result.insert(b"dir".to_vec(), dir.into_bytes());
         }
         if let Some(dbfilename) = self.dbfilename {
-            result.insert("dbfilename".to_string(), dbfilename);
+            result.insert(b"dbfilename".to_vec(), dbfilename.into_bytes());
         }
         result
     }
