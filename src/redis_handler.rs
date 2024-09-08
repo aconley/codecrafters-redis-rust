@@ -19,6 +19,7 @@ use crate::resp_parser::RespValue;
 #[derive(Debug)]
 pub(crate) struct RedisHandler {
     data: RefCell<HashMap<Vec<u8>, ValueType>>,
+    config: RefCell<HashMap<String, String>>,
 }
 
 #[derive(Clone, Debug)]
@@ -31,6 +32,14 @@ impl RedisHandler {
     pub(crate) fn new() -> Self {
         RedisHandler {
             data: RefCell::new(HashMap::new()),
+            config: RefCell::new(HashMap::new()),
+        }
+    }
+
+    pub(crate) fn new_with_config(config: HashMap<String, String>) -> Self {
+        RedisHandler {
+            data: RefCell::new(HashMap::new()),
+            config: RefCell::new(config),
         }
     }
 
@@ -96,7 +105,7 @@ impl RedisHandler {
                 RespValue::SimpleString(b"OK").write_async(stream).await?
             }
             RedisRequest::Get(key) => {
-                // We have to make a copy of the value, because while we are paused on the await, another 
+                // We have to make a copy of the value, because while we are paused on the await, another
                 // future may overwrite the value for this key and invalidate the reference.
                 let value_copy = self.data.borrow().get(key).map(|v| v.to_owned());
                 match value_copy {
@@ -105,12 +114,15 @@ impl RedisHandler {
                         RespValue::NullBulkString.write_async(stream).await?
                     }
                     Some(ValueType { value, .. }) => {
-                        RespValue::BulkString(&value)
-                            .write_async(stream)
-                            .await?
+                        RespValue::BulkString(&value).write_async(stream).await?
                     }
                     None => RespValue::NullBulkString.write_async(stream).await?,
                 }
+            }
+            RedisRequest::ConfigGet(_) => {
+                RespValue::SimpleError(b"unimplemented")
+                    .write_async(stream)
+                    .await?
             }
         }
         Ok(())

@@ -13,6 +13,7 @@ pub(crate) enum RedisRequest<'a> {
         value: &'a [u8],
         expiration: Option<Instant>,
     },
+    ConfigGet(Vec<&'a [u8]>),
     Get(&'a [u8]),
 }
 
@@ -41,6 +42,7 @@ fn parse_command<'a>(value: RespValue<'a>) -> Result<RedisRequest<'a>, RedisErro
                         b"ECHO" => parse_echo(&values[1..]),
                         b"SET" => parse_set(&values[1..]),
                         b"GET" => parse_get(&values[1..]),
+                        b"CONFIG" => parse_config(&values[1..]),
                         _ => Err(RedisError::UnknownRequest(format!(
                             "Unexpected command name {}",
                             String::from_utf8_lossy(&contents)
@@ -145,6 +147,38 @@ fn parse_get<'a>(values: &[RespValue<'a>]) -> Result<RedisRequest<'a>, RedisErro
             ))),
         }
     }
+}
+
+fn parse_config<'a>(values: &[RespValue<'a>]) -> Result<RedisRequest<'a>, RedisError> {
+    if values.len() < 2 {
+        return Err(RedisError::UnexpectedNumberOfArgs("For CONFIG expected at least CONFIG <SUBCOMMAND>".to_string()));
+    }
+    match values[0] {
+        RespValue::BulkString(subcommand) =>
+        match &uppercase(subcommand)[..] {
+            b"GET" => parse_command_get(&values[1..]),
+            _ => Err(RedisError::UnknownRequest(format!("Unknown SUBCOMMAND after CONFIG: {}",
+            String::from_utf8_lossy(subcommand))))
+        }
+        _ => Err(RedisError::UnexpectedArgumentType(format!(
+            "For CONFIG <SUBCOMMAND>, SUBCOMMAND should have been BulkString, got {}",
+            values[0].type_string()))),
+    }
+}
+
+fn parse_command_get<'a>(values: &[RespValue<'a>]) -> Result<RedisRequest<'a>, RedisError> {
+    let mut params = Vec::<&'a [u8]>::new();
+    for (idx, value) in values.iter().enumerate() {
+        match value {
+            RespValue::BulkString(param) => params.push(*param),
+            _ => return Err(RedisError::UnexpectedArgumentType(
+                format!(
+                "For CONFIG GET values, expected type BulkString at position {} in values got {}", 
+            idx, value.type_string()))),
+        }
+    }
+
+    Ok(RedisRequest::ConfigGet(params))
 }
 
 fn uppercase(value: &[u8]) -> Vec<u8> {
@@ -337,6 +371,31 @@ mod tests {
             parsed.err().unwrap()
         );
         assert!(matches!(parsed.unwrap(), RedisRequest::Get(b"key")));
+    }
+
+    #[test]
+    fn parse_config_get_single() {
+        let config_get = RespValue::Array(vec![
+            RespValue::BulkString(b"CONFIG"),
+            RespValue::BulkString(b"GET"),
+            RespValue::BulkString(b"dir"),
+        ]);
+        assert!(matches!(parse_command(config_get),
+            Ok(RedisRequest::ConfigGet(params)) if matches!(params[..], [b"dir"]))
+        );
+    }
+
+    #[test]
+    fn parse_config_get_multiple() {
+        let values = RespValue::Array(vec![
+            RespValue::BulkString(b"CONFIG"),
+            RespValue::BulkString(b"GET"),
+            RespValue::BulkString(b"dir"),
+            RespValue::BulkString(b"max_concurrency"),
+        ]);
+        assert!(matches!(parse_command(values),
+            Ok(RedisRequest::ConfigGet(params)) if matches!(params[..], [b"dir", b"max_concurrency"]))
+        );
     }
 
     #[test]
