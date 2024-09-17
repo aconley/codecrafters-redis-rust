@@ -1,5 +1,6 @@
 /// Error types for Redis implementation.
 
+/// Errors encountered while handling redis requests.
 #[derive(Debug)]
 pub(crate) enum RedisError {
     RespParseError(RespError),
@@ -9,6 +10,7 @@ pub(crate) enum RedisError {
     UnexpectedArgumentType(String),
 }
 
+/// Errors encountered while parsing RESP values.
 #[derive(Debug)]
 pub(crate) enum RespError {
     UnexpectedEnd,
@@ -18,6 +20,15 @@ pub(crate) enum RespError {
     IOError(std::io::Error),
     IntParseFailure(std::num::ParseIntError),
     StringParseFailure(std::str::Utf8Error),
+}
+
+/// Errors encountered while parsing Rdb files.
+#[derive(Debug)]
+pub(crate) enum RdbFileError {
+    UnknownStartingByte(u8),
+    NotRedisFile,
+    InvalidFile(String),
+    IOError(std::io::Error),
 }
 
 impl std::fmt::Display for RedisError {
@@ -81,5 +92,25 @@ impl From<std::str::Utf8Error> for RespError {
 impl From<std::io::Error> for RespError {
     fn from(from: std::io::Error) -> Self {
         RespError::IOError(from)
+    }
+}
+
+impl std::fmt::Display for RdbFileError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RdbFileError::IOError(inner) => write!(f, "IOError {:?}", inner),
+            RdbFileError::UnknownStartingByte(byte) =>
+                write!(f, "Unexpected starting byte {}", byte),
+            RdbFileError::NotRedisFile => write!(f, "Input was not a redis file"),
+            RdbFileError::InvalidFile(inner) => write!(f, "Invalid RDB file: {}", inner),
+        }
+    }
+}
+
+impl std::error::Error for RdbFileError {}
+
+impl From<std::io::Error> for RdbFileError {
+    fn from(from: std::io::Error) -> Self {
+        RdbFileError::IOError(from)
     }
 }

@@ -1,4 +1,5 @@
 mod errors;
+mod rdb_parser;
 mod redis_handler;
 mod resp_command;
 mod resp_parser;

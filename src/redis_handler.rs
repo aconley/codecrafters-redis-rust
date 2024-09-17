@@ -43,6 +43,10 @@ impl RedisHandler {
         }
     }
 
+    pub(crate) fn new_from_file(path: std::path::PathBuf) -> Result<Self, std::io::Error> {
+        todo!("Implement")
+    }
+
     // Handles all the requests in the stream.
     //
     // Precondition: this can only be called from a single threaded context, since the data
