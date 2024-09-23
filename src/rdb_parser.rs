@@ -1,7 +1,9 @@
 /// A parser for RDB files.
+use std::collections::HashMap;
 use std::io::Read;
 
-use crate::{errors::RdbFileError, redis_handler::RedisHandler};
+use crate::errors::RdbFileError;
+use crate::redis_handler::{RedisHandler, ValueType};
 
 pub(crate) struct RdbReader<R> {
     reader: R,
@@ -21,6 +23,7 @@ impl<R> RdbReader<R> {
 enum RdbValue {
     Header { version: [u8; 4] },
     MetadataSection { key: Vec<u8>, value: Vec<u8> },
+    Database(HashMap<Vec<u8>, ValueType>),
     EndOfFile { checksum: [u8; 8] },
 }
 
@@ -31,7 +34,7 @@ where
     // Create a RedisHandler from an input Reader.
     fn create_handler(&mut self) -> Result<RedisHandler, RdbFileError> {
         self.read_header()?;
-        let mut config = std::collections::HashMap::new();
+        let mut db = std::collections::HashMap::new();
         loop {
             match self.read_next_value()? {
                 RdbValue::Header { .. } => {
@@ -39,10 +42,9 @@ where
                         "Multiple file headers".to_string(),
                     ))
                 }
-                RdbValue::MetadataSection { key, value } => {
-                    config.insert(key, value);
-                }
-                RdbValue::EndOfFile { .. } => return Ok(RedisHandler::new_with_config(config)),
+                RdbValue::MetadataSection { .. } => (),
+                RdbValue::Database(contents) => db = contents,
+                RdbValue::EndOfFile { .. } => return Ok(RedisHandler::new_from_contents(db)),
             }
         }
     }
@@ -78,7 +80,77 @@ where
     }
 
     fn read_database(&mut self) -> Result<RdbValue, RdbFileError> {
-        todo!("Implement")
+        let database_idx = self.read_size()?;
+        if database_idx != 0 {
+            return Err(RdbFileError::Unimplemented(
+                "Multiple databases not supported".to_string(),
+            ));
+        }
+        let b = self.read_next_byte()?;
+        if b != 0xfb {
+            return Err(RdbFileError::UnexpectedByte {
+                expected: "0xfb".to_string(),
+                actual: b,
+            });
+        }
+        // Size of hash_table.
+        let mut n_values = self.read_size()?;
+        let mut n_expires = self.read_size()?;
+
+        // Values.
+        let mut database_contents = HashMap::new();
+        for _ in 0..n_values {
+            let b = self.read_next_byte()?;
+            match b {
+                0x00 => {
+                    // Value without expiration.
+                    let key = self.read_string()?;
+                    let value = self.read_string()?;
+                    database_contents.insert(key, ValueType::new(value));
+                }
+                0xfc => {
+                    // Expiration in milliseconds, 8 bytes, unisgned, little endian.
+                    let mut buffer = [0u8; 8];
+                    self.reader.read_exact(&mut buffer)?;
+                    let expiration_millis = u64::from_le_bytes(buffer);
+                    let b = self.read_next_byte()?;
+                    if b != 0 {
+                        return Err(RdbFileError::UnexpectedByte {
+                            expected: "0x00".to_string(),
+                            actual: b,
+                        });
+                    }
+                    let key = self.read_string()?;
+                    let value = self.read_string()?;
+                    database_contents
+                        .insert(key, ValueType::new_from_millis(value, expiration_millis));
+                }
+                0xfd => {
+                    // Expiration in seconds, 4 bytes, unisgned, little endian.
+                    let mut buffer = [0u8; 4];
+                    self.reader.read_exact(&mut buffer)?;
+                    let expiration_seconds = u32::from_le_bytes(buffer);
+                    let b = self.read_next_byte()?;
+                    if b != 0 {
+                        return Err(RdbFileError::UnexpectedByte {
+                            expected: "0x00".to_string(),
+                            actual: b,
+                        });
+                    }
+                    let key = self.read_string()?;
+                    let value = self.read_string()?;
+                    database_contents
+                        .insert(key, ValueType::new_from_seconds(value, expiration_seconds));
+                }
+                _ => {
+                    return Err(RdbFileError::UnexpectedByte {
+                        expected: "One of (0xfc, 0xfd, 00)".to_string(),
+                        actual: b,
+                    });
+                }
+            }
+        }
+        Ok(RdbValue::Database(database_contents))
     }
 
     fn read_end_of_file(&mut self) -> Result<RdbValue, RdbFileError> {
@@ -87,7 +159,25 @@ where
         Ok(RdbValue::EndOfFile { checksum })
     }
 
+    fn read_size(&mut self) -> Result<usize, RdbFileError> {
+        let b = self.read_next_byte()?;
+        match (b & 0xc0) >> 6 {
+            // Next 6 bits of the lead byte specify the length of the string.
+            0 => Ok((b & 0x3f) as usize),
+            // The size is the next 14 bits.
+            1 => Ok((((b & 0x3f) as usize) << 8) + self.read_next_byte()? as usize),
+            2 => {
+                // The size is the next 4 bytes (ignore the rest of the first byte).
+                let mut buffer = [0u8; 4];
+                self.reader.read_exact(&mut buffer)?;
+                Ok(u32::from_be_bytes(buffer) as usize)
+            }
+            _ => Err(RdbFileError::UnknownStartingByte(b)),
+        }
+    }
+
     fn read_string(&mut self) -> Result<Vec<u8>, RdbFileError> {
+        // Supports additional size encodings that read_size does not.
         let b = self.read_next_byte()?;
         match (b & 0xc0) >> 6 {
             0 => {

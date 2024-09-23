@@ -7,7 +7,7 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::time::Instant;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
@@ -22,16 +22,23 @@ pub(crate) struct RedisHandler {
     config: RefCell<HashMap<Vec<u8>, Vec<u8>>>,
 }
 
-#[derive(Clone, Debug)]
-struct ValueType {
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ValueType {
     value: Vec<u8>,
-    expiration: Option<Instant>,
+    expiration: Option<SystemTime>,
 }
 
 impl RedisHandler {
     pub(crate) fn new() -> Self {
         RedisHandler {
             data: RefCell::new(HashMap::new()),
+            config: RefCell::new(HashMap::new()),
+        }
+    }
+
+    pub(crate) fn new_from_contents(contents: HashMap<Vec<u8>, ValueType>) -> Self {
+        RedisHandler {
+            data: RefCell::new(contents),
             config: RefCell::new(HashMap::new()),
         }
     }
@@ -154,9 +161,21 @@ impl RedisHandler {
 }
 
 impl ValueType {
+    pub(crate) fn new(value: Vec<u8>) -> Self {
+        ValueType { value, expiration: None }
+    }
+
+    pub(crate) fn new_from_seconds(value: Vec<u8>, seconds: u32 ) -> Self {
+        ValueType { value, expiration: Some(UNIX_EPOCH + Duration::from_secs(seconds as u64)) }
+    }
+
+    pub(crate) fn new_from_millis(value: Vec<u8>, millis: u64 ) -> Self {
+        ValueType { value, expiration: Some(UNIX_EPOCH + Duration::from_millis(millis)) }
+    }
+
     fn is_expired(&self) -> bool {
         self.expiration
-            .map_or(false, |expiration| Instant::now() > expiration)
+            .map_or(false, |expiration| SystemTime::now() > expiration)
     }
 }
 

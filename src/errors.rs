@@ -26,9 +26,11 @@ pub(crate) enum RespError {
 #[derive(Debug)]
 pub(crate) enum RdbFileError {
     UnknownStartingByte(u8),
+    UnexpectedByte { expected: String, actual: u8 },
     NotRedisFile,
     InvalidFile(String),
     IOError(std::io::Error),
+    Unimplemented(String),
 }
 
 impl std::fmt::Display for RedisError {
@@ -99,10 +101,15 @@ impl std::fmt::Display for RdbFileError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             RdbFileError::IOError(inner) => write!(f, "IOError {:?}", inner),
-            RdbFileError::UnknownStartingByte(byte) =>
-                write!(f, "Unexpected starting byte {}", byte),
+            RdbFileError::UnknownStartingByte(byte) => {
+                write!(f, "Unexpected starting byte {}", byte)
+            }
+            RdbFileError::UnexpectedByte { expected, actual } => {
+                write!(f, "Unexpected byte; expected {} got {}", expected, actual)
+            }
             RdbFileError::NotRedisFile => write!(f, "Input was not a redis file"),
             RdbFileError::InvalidFile(inner) => write!(f, "Invalid RDB file: {}", inner),
+            RdbFileError::Unimplemented(inner) => write!(f, "Unimplemented: {}", inner),
         }
     }
 }

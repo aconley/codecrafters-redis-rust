@@ -1,4 +1,4 @@
-use std::time::{Duration, Instant};
+use std::time::{Duration, SystemTime};
 
 use crate::errors::RedisError;
 use crate::resp_parser::{parse_integer, RespParser, RespValue};
@@ -11,7 +11,7 @@ pub(crate) enum RedisRequest<'a> {
     Set {
         key: &'a [u8],
         value: &'a [u8],
-        expiration: Option<Instant>,
+        expiration: Option<SystemTime>,
     },
     ConfigGet(Vec<&'a [u8]>),
     Get(&'a [u8]),
@@ -191,10 +191,10 @@ fn uppercase(value: &[u8]) -> Vec<u8> {
 fn parse_expiration(
     expiration_type: &[u8],
     expiration_value: &[u8],
-) -> Result<Instant, RedisError> {
+) -> Result<SystemTime, RedisError> {
     match &uppercase(expiration_type)[..] {
         b"PX" => {
-            Ok(Instant::now() + Duration::from_millis(parse_integer(expiration_value)? as u64))
+            Ok(SystemTime::now() + Duration::from_millis(parse_integer(expiration_value)? as u64))
         }
         _ => Err(RedisError::UnknownRequest(format!(
             "For SET, unexpected expiry spec {}",
