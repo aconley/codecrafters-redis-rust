@@ -102,10 +102,10 @@ impl std::fmt::Display for RdbFileError {
         match self {
             RdbFileError::IOError(inner) => write!(f, "IOError {:?}", inner),
             RdbFileError::UnknownStartingByte(byte) => {
-                write!(f, "Unexpected starting byte {}", byte)
+                write!(f, "Unexpected starting byte {:#04x}", byte)
             }
             RdbFileError::UnexpectedByte { expected, actual } => {
-                write!(f, "Unexpected byte; expected {} got {}", expected, actual)
+                write!(f, "Unexpected byte; expected {} got {:#04x}", expected, actual)
             }
             RdbFileError::NotRedisFile => write!(f, "Input was not a redis file"),
             RdbFileError::InvalidFile(inner) => write!(f, "Invalid RDB file: {}", inner),

@@ -94,8 +94,8 @@ where
             });
         }
         // Size of hash_table.
-        let mut n_values = self.read_size()?;
-        let mut n_expires = self.read_size()?;
+        let n_values = self.read_size()?;
+        self.read_size()?; // Number of expires, which we don't use.
 
         // Values.
         let mut database_contents = HashMap::new();
@@ -351,5 +351,46 @@ mod tests {
             actual.unwrap_err()
         );
         assert_eq!(actual.unwrap(), b"1234567".to_vec());
+    }
+
+    #[test]
+    fn read_database() {
+        #[rustfmt::skip]
+        let input = [
+            // Header
+            0x00, 0xfb, 0x03, 0x02,
+            // First value: foobar -> bazqux with no expiration.
+            0x00, 0x06, 0x66, 0x6F, 0x6F, 0x62, 0x61, 0x72, 0x06, 0x62, 0x61, 0x7A, 0x71, 0x75,
+            0x78, 
+            // Second value: foo -> bar with expiration 1713824559637 millis.
+            0xfc, 0x15, 0x72, 0xE7, 0x07, 0x8F, 0x01, 0x00, 0x00, 0x00, 0x03, 0x66, 0x6F, 0x6F,
+            0x03, 0x62, 0x61, 0x72,
+            // Third value: baz -> qux with expiration 1714089298 seconds.
+            0xfd, 0x52, 0xED, 0x2A, 0x66, 0x00, 0x03, 0x62, 0x61, 0x7A, 0x03, 0x71, 0x75, 0x78,
+        ];
+        let mut reader = RdbReader::new(&input[..]);
+
+        let actual = reader.read_database();
+        assert!(
+            actual.is_ok(),
+            "Expected successful database read, got {}",
+            actual.unwrap_err()
+        );
+
+        let expected = vec![
+            (b"foobar".to_vec(), ValueType::new(b"bazqux".to_vec())),
+            (
+                b"foo".to_vec(),
+                ValueType::new_from_millis(b"bar".to_vec(), 1713824559637),
+            ),
+            (
+                b"baz".to_vec(),
+                ValueType::new_from_seconds(b"qux".to_vec(), 1714089298),
+            ),
+        ]
+        .iter()
+        .cloned()
+        .collect::<HashMap<_, _>>();
+        assert_eq!(actual.unwrap(), RdbValue::Database(expected));
     }
 }
