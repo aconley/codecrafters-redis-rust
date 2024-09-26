@@ -32,7 +32,10 @@ where
     R: Read,
 {
     // Create a RedisHandler from an input Reader.
-    fn create_handler(&mut self) -> Result<RedisHandler, RdbFileError> {
+    pub(crate) fn create_handler(
+        &mut self,
+        config: HashMap<Vec<u8>, Vec<u8>>,
+    ) -> Result<RedisHandler, RdbFileError> {
         self.read_header()?;
         let mut db = std::collections::HashMap::new();
         loop {
@@ -44,7 +47,7 @@ where
                 }
                 RdbValue::MetadataSection { .. } => (),
                 RdbValue::Database(contents) => db = contents,
-                RdbValue::EndOfFile { .. } => return Ok(RedisHandler::new_from_contents(db)),
+                RdbValue::EndOfFile { .. } => return Ok(RedisHandler::new_with_contents(config, db)),
             }
         }
     }

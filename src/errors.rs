@@ -8,6 +8,7 @@ pub(crate) enum RedisError {
     UnknownRequest(String),
     UnexpectedNumberOfArgs(String),
     UnexpectedArgumentType(String),
+    RdbParserError(RdbFileError),
 }
 
 /// Errors encountered while parsing RESP values.
@@ -45,6 +46,7 @@ impl std::fmt::Display for RedisError {
             RedisError::UnexpectedArgumentType(val) => {
                 write!(f, "Unexpected argument type: {}", val)
             }
+            RedisError::RdbParserError(inner) => inner.fmt(f),
         }
     }
 }
@@ -60,6 +62,12 @@ impl From<std::io::Error> for RedisError {
 impl From<RespError> for RedisError {
     fn from(from: RespError) -> Self {
         RedisError::RespParseError(from)
+    }
+}
+
+impl From<RdbFileError> for RedisError {
+    fn from(from: RdbFileError) -> Self {
+        RedisError::RdbParserError(from)
     }
 }
 

@@ -39,8 +39,29 @@ impl RedisArgs {
 #[tokio::main(worker_threads = 1)]
 async fn main() {
     let args = RedisArgs::parse();
-    let handler = Arc::new(RedisHandler::new_with_config(args.to_config_dict()));
-
+    let handler = match &args.dbfilename {
+        Some(filepath) => {
+            let mut fully_qualified_path = std::path::PathBuf::new();
+            if let Some(dir) = &args.dir {
+                fully_qualified_path.push(dir);
+            }
+            fully_qualified_path.push(filepath);
+            if !fully_qualified_path.exists() {
+                Arc::new(RedisHandler::new_with_contents(
+                    args.to_config_dict(),
+                    HashMap::new(),
+                ))
+            } else {
+                Arc::new(
+                    RedisHandler::new_from_file(fully_qualified_path, args.to_config_dict())
+                        .expect("Error reading rdb file"))
+            }
+        }
+        None => Arc::new(RedisHandler::new_with_contents(
+            args.to_config_dict(),
+            HashMap::new(),
+        )),
+    };
     let listener = TcpListener::bind(IP_PORT).await.expect("Error connecting");
 
     loop {

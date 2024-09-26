@@ -12,6 +12,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
 use crate::errors::RedisError;
+use crate::rdb_parser::RdbReader;
 use crate::resp_command::{parse_commands, RedisRequest};
 use crate::resp_parser::RespValue;
 
@@ -36,22 +37,17 @@ impl RedisHandler {
         }
     }
 
-    pub(crate) fn new_from_contents(contents: HashMap<Vec<u8>, ValueType>) -> Self {
+    pub(crate) fn new_with_contents(config: HashMap<Vec<u8>, Vec<u8>>, data: HashMap<Vec<u8>, ValueType>) -> Self {
         RedisHandler {
-            data: RefCell::new(contents),
-            config: RefCell::new(HashMap::new()),
-        }
-    }
-
-    pub(crate) fn new_with_config(config: HashMap<Vec<u8>, Vec<u8>>) -> Self {
-        RedisHandler {
-            data: RefCell::new(HashMap::new()),
+            data: RefCell::new(data),
             config: RefCell::new(config),
         }
     }
 
-    pub(crate) fn new_from_file(path: std::path::PathBuf) -> Result<Self, std::io::Error> {
-        todo!("Implement")
+    pub(crate) fn new_from_file(path: std::path::PathBuf, config: HashMap<Vec<u8>, Vec<u8>>) -> Result<Self, RedisError> {
+        let input = std::fs::read(path)?;
+        let mut rdb_reader = RdbReader::new(&input[..]);
+        Ok(rdb_reader.create_handler(config)?)
     }
 
     // Handles all the requests in the stream.
@@ -160,17 +156,32 @@ impl RedisHandler {
     }
 }
 
+impl Default for RedisHandler {
+    fn default() -> Self {
+        RedisHandler::new()
+    }
+}
+
 impl ValueType {
     pub(crate) fn new(value: Vec<u8>) -> Self {
-        ValueType { value, expiration: None }
+        ValueType {
+            value,
+            expiration: None,
+        }
     }
 
-    pub(crate) fn new_from_seconds(value: Vec<u8>, seconds: u32 ) -> Self {
-        ValueType { value, expiration: Some(UNIX_EPOCH + Duration::from_secs(seconds as u64)) }
+    pub(crate) fn new_from_seconds(value: Vec<u8>, seconds: u32) -> Self {
+        ValueType {
+            value,
+            expiration: Some(UNIX_EPOCH + Duration::from_secs(seconds as u64)),
+        }
     }
 
-    pub(crate) fn new_from_millis(value: Vec<u8>, millis: u64 ) -> Self {
-        ValueType { value, expiration: Some(UNIX_EPOCH + Duration::from_millis(millis)) }
+    pub(crate) fn new_from_millis(value: Vec<u8>, millis: u64) -> Self {
+        ValueType {
+            value,
+            expiration: Some(UNIX_EPOCH + Duration::from_millis(millis)),
+        }
     }
 
     fn is_expired(&self) -> bool {
