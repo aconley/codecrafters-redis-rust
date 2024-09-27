@@ -19,23 +19,23 @@ pub(crate) enum RespValue<'a> {
 impl<'a> RespValue<'a> {
     pub(crate) fn write<W: std::io::Write>(&self, writer: &mut W) -> Result<(), RespError> {
         match self {
-            RespValue::SimpleString(ref contents) => {
-                writer.write_all(&[b'+'])?;
+            RespValue::SimpleString(contents) => {
+                writer.write_all(b"+")?;
                 writer.write_all(contents)?;
                 writer.write_all(SEPARATOR)?;
             }
-            RespValue::SimpleError(ref contents) => {
-                writer.write_all(&[b'-'])?;
+            RespValue::SimpleError(contents) => {
+                writer.write_all(b"-")?;
                 writer.write_all(contents)?;
                 writer.write_all(SEPARATOR)?;
             }
             RespValue::SimpleInteger(value) => {
-                writer.write_all(&[b':'])?;
+                writer.write_all(b":")?;
                 writer.write_all(value.to_string().as_bytes())?;
                 writer.write_all(SEPARATOR)?;
             }
-            RespValue::BulkString(ref contents) => {
-                writer.write_all(&[b'$'])?;
+            RespValue::BulkString(contents) => {
+                writer.write_all(b"$")?;
                 writer.write_all(format!("{}", contents.len()).as_bytes())?;
                 writer.write_all(SEPARATOR)?;
                 writer.write_all(contents)?;
@@ -43,7 +43,7 @@ impl<'a> RespValue<'a> {
             }
             RespValue::NullBulkString => writer.write_all(b"$-1\r\n")?,
             RespValue::Array(vals) => {
-                writer.write_all(&[b'*'])?;
+                writer.write_all(b"*")?;
                 writer.write_all(format!("{}", vals.len()).as_bytes())?;
                 writer.write_all(SEPARATOR)?;
                 for val in vals {
@@ -60,23 +60,23 @@ impl<'a> RespValue<'a> {
         W: tokio::io::AsyncWriteExt + Unpin,
     {
         match self {
-            RespValue::SimpleString(ref contents) => {
-                writer.write_all(&[b'+']).await?;
+            RespValue::SimpleString(contents) => {
+                writer.write_u8(b'+').await?;
                 writer.write_all(contents).await?;
                 writer.write_all(SEPARATOR).await?;
             }
-            RespValue::SimpleError(ref contents) => {
-                writer.write_all(&[b'-']).await?;
+            RespValue::SimpleError(contents) => {
+                writer.write_u8(b'-').await?;
                 writer.write_all(contents).await?;
                 writer.write_all(SEPARATOR).await?;
             }
             RespValue::SimpleInteger(value) => {
-                writer.write_all(&[b':']).await?;
+                writer.write_u8(b':').await?;
                 writer.write_all(value.to_string().as_bytes()).await?;
                 writer.write_all(SEPARATOR).await?;
             }
-            RespValue::BulkString(ref contents) => {
-                writer.write_all(&[b'$']).await?;
+            RespValue::BulkString(contents) => {
+                writer.write_u8(b'$').await?;
                 writer
                     .write_all(format!("{}", contents.len()).as_bytes())
                     .await?;
@@ -86,7 +86,7 @@ impl<'a> RespValue<'a> {
             }
             RespValue::NullBulkString => writer.write_all(b"$-1\r\n").await?,
             RespValue::Array(vals) => {
-                writer.write_all(&[b'*']).await?;
+                writer.write_u8(b'*').await?;
                 writer
                     .write_all(format!("{}", vals.len()).as_bytes())
                     .await?;
@@ -140,7 +140,7 @@ impl<'a> RespParser<'a> {
     }
 
     pub(crate) fn get_values<'b>(&self, input: &'b [u8]) -> Result<Vec<RespValue<'b>>, RespError> {
-        if input.len() == 0 {
+        if input.is_empty() {
             return Ok(Vec::new());
         }
         let mut resp_values = Vec::new();
@@ -157,7 +157,7 @@ impl<'a> RespParser<'a> {
     // a slice pointing at the remainder of the input after that word.
     fn next_value<'b>(&self, input: &'b [u8]) -> RespResult<'b> {
         let RespPartialParse { word, remainder } = self.next_word(input)?;
-        if word.len() == 0 {
+        if word.is_empty() {
             return Err(RespError::UnexpectedEnd);
         }
         match word[0] {
@@ -216,31 +216,31 @@ impl<'a> RespParser<'a> {
 
     fn parse_array<'b>(&self, input: &'b [u8], remainder: &'b [u8]) -> RespResult<'b> {
         let size = parse_integer(input)?;
-        if size < -1 {
-            Err(RespError::BadArraySize(size))
-        } else if size == -1 {
-            Ok(RespParseStep {
+        match size.cmp(&-1) {
+            std::cmp::Ordering::Less => Err(RespError::BadArraySize(size)),
+            std::cmp::Ordering::Equal => Ok(RespParseStep {
                 value: RespValue::NullArray,
                 remainder,
-            })
-        } else {
-            let mut vals = Vec::with_capacity(size as usize);
-            let mut curr_remainder = remainder;
-            for _ in 0..size {
-                let RespParseStep { value, remainder } = self.next_value(&curr_remainder)?;
-                vals.push(value);
-                curr_remainder = remainder;
+            }),
+            std::cmp::Ordering::Greater => {
+                let mut vals = Vec::with_capacity(size as usize);
+                let mut curr_remainder = remainder;
+                for _ in 0..size {
+                    let RespParseStep { value, remainder } = self.next_value(curr_remainder)?;
+                    vals.push(value);
+                    curr_remainder = remainder;
+                }
+                Ok(RespParseStep {
+                    value: RespValue::Array(vals),
+                    remainder: curr_remainder,
+                })
             }
-            Ok(RespParseStep {
-                value: RespValue::Array(vals),
-                remainder: &curr_remainder,
-            })
         }
     }
 }
 
 pub(crate) fn parse_integer(input: &[u8]) -> Result<i64, RespError> {
-    Ok(i64::from_str_radix(std::str::from_utf8(input)?, 10)?)
+    Ok(std::str::from_utf8(input)?.parse::<i64>()?)
 }
 
 #[cfg(test)]

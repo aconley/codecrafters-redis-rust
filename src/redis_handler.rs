@@ -64,9 +64,10 @@ impl RedisHandler {
         &self,
         stream: &mut TcpStream,
     ) -> Result<(), RedisError> {
-        let mut input_buf = [0u8; 512];
+        // Use a vec to avoid having a large stack state in the state machine.
+        let mut input_buf = vec![0u8; 512];
         loop {
-            let bytes_read = stream.read(&mut input_buf).await?;
+            let bytes_read = stream.read_to_end(&mut input_buf).await?;
             if bytes_read == 0 {
                 break;
             }
@@ -84,7 +85,6 @@ impl RedisHandler {
                     Ok(()) => (),
                     Err(error) => {
                         let _ = stream.write_all(format!("{:?}", error).as_bytes()).await;
-                        ()
                     }
                 }
             }
@@ -142,18 +142,15 @@ impl RedisHandler {
                 {
                     let config = self.config.borrow();
                     for param in params {
-                        match config.get(param) {
-                            Some(value) => {
-                                values.push(param.to_owned());
-                                values.push(value.to_owned());
-                            }
-                            None => (),
+                        if let Some(value) = config.get(param) {
+                            values.push(param.to_owned());
+                            values.push(value.to_owned());
                         }
                     }
                 }
                 let response_array = values
                     .iter()
-                    .map(|v| RespValue::BulkString(&*v))
+                    .map(|v| RespValue::BulkString(v))
                     .collect::<Vec<_>>();
                 RespValue::Array(response_array).write_async(stream).await?
             }
@@ -176,7 +173,7 @@ impl RedisHandler {
                 };
                 let response_array = keys
                     .iter()
-                    .map(|v| RespValue::BulkString(&*v))
+                    .map(|v| RespValue::BulkString(v))
                     .collect::<Vec<_>>();
                 RespValue::Array(response_array).write_async(stream).await?
             }

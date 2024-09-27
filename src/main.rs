@@ -23,7 +23,7 @@ struct RedisArgs {
 }
 
 impl RedisArgs {
-    fn to_config_dict(self) -> HashMap<Vec<u8>, Vec<u8>> {
+    fn into_config_dict(self) -> HashMap<Vec<u8>, Vec<u8>> {
         let mut result = HashMap::new();
         if let Some(dir) = self.dir {
             result.insert(b"dir".to_vec(), dir.into_bytes());
@@ -48,17 +48,17 @@ async fn main() {
             fully_qualified_path.push(filepath);
             if !fully_qualified_path.exists() {
                 Arc::new(RedisHandler::new_with_contents(
-                    args.to_config_dict(),
+                    args.into_config_dict(),
                     HashMap::new(),
                 ))
             } else {
                 Arc::new(
-                    RedisHandler::new_from_file(fully_qualified_path, args.to_config_dict())
+                    RedisHandler::new_from_file(fully_qualified_path, args.into_config_dict())
                         .expect("Error reading rdb file"))
             }
         }
         None => Arc::new(RedisHandler::new_with_contents(
-            args.to_config_dict(),
+            args.into_config_dict(),
             HashMap::new(),
         )),
     };

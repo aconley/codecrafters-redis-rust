@@ -18,7 +18,7 @@ pub(crate) enum RedisRequest<'a> {
     Keys(&'a [u8]),
 }
 
-pub(crate) fn parse_commands<'a>(input: &'a [u8]) -> Result<Vec<RedisRequest<'a>>, RedisError> {
+pub(crate) fn parse_commands(input: &[u8]) -> Result<Vec<RedisRequest>, RedisError> {
     if input.is_empty() {
         return Ok(Vec::new());
     }
@@ -30,7 +30,7 @@ pub(crate) fn parse_commands<'a>(input: &'a [u8]) -> Result<Vec<RedisRequest<'a>
     Ok(requests)
 }
 
-fn parse_command<'a>(value: RespValue<'a>) -> Result<RedisRequest<'a>, RedisError> {
+fn parse_command(value: RespValue) -> Result<RedisRequest, RedisError> {
     match value {
         RespValue::Array(values) => {
             if values.is_empty() {
@@ -46,7 +46,7 @@ fn parse_command<'a>(value: RespValue<'a>) -> Result<RedisRequest<'a>, RedisErro
                     b"KEYS" => parse_keys(&values[1..]),
                     _ => Err(RedisError::UnknownRequest(format!(
                         "Unexpected command name {}",
-                        String::from_utf8_lossy(&contents)
+                        String::from_utf8_lossy(contents)
                     ))),
                 },
                 _ => Err(RedisError::UnknownRequest(format!(
@@ -112,7 +112,7 @@ fn parse_set<'a>(values: &[RespValue<'a>]) -> Result<RedisRequest<'a>, RedisErro
         };
     }
     // Version with expiration.
-    return match (&values[0], &values[1], &values[2], &values[3]) {
+    match (&values[0], &values[1], &values[2], &values[3]) {
         (RespValue::BulkString(key),
          RespValue::BulkString(value),
          RespValue::BulkString(expiration_type),
@@ -129,7 +129,7 @@ fn parse_set<'a>(values: &[RespValue<'a>]) -> Result<RedisRequest<'a>, RedisErro
             values[2].type_string(),
             values[3].type_string()
         ))),
-    };
+    }
 }
 
 fn parse_get<'a>(values: &[RespValue<'a>]) -> Result<RedisRequest<'a>, RedisError> {
