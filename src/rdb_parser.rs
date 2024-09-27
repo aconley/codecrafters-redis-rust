@@ -66,7 +66,7 @@ where
     }
 
     /// Reads the next value from the input.
-    pub(crate) fn read_next_value(&mut self) -> Result<RdbValue, RdbFileError> {
+    fn read_next_value(&mut self) -> Result<RdbValue, RdbFileError> {
         match self.read_next_byte()? {
             0xfa => self.read_metadata_entry(),
             0xfe => self.read_database(),

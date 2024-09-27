@@ -37,14 +37,20 @@ impl RedisHandler {
         }
     }
 
-    pub(crate) fn new_with_contents(config: HashMap<Vec<u8>, Vec<u8>>, data: HashMap<Vec<u8>, ValueType>) -> Self {
+    pub(crate) fn new_with_contents(
+        config: HashMap<Vec<u8>, Vec<u8>>,
+        data: HashMap<Vec<u8>, ValueType>,
+    ) -> Self {
         RedisHandler {
             data: RefCell::new(data),
             config: RefCell::new(config),
         }
     }
 
-    pub(crate) fn new_from_file(path: std::path::PathBuf, config: HashMap<Vec<u8>, Vec<u8>>) -> Result<Self, RedisError> {
+    pub(crate) fn new_from_file(
+        path: std::path::PathBuf,
+        config: HashMap<Vec<u8>, Vec<u8>>,
+    ) -> Result<Self, RedisError> {
         let input = std::fs::read(path)?;
         let mut rdb_reader = RdbReader::new(&input[..]);
         Ok(rdb_reader.create_handler(config)?)
@@ -146,6 +152,29 @@ impl RedisHandler {
                     }
                 }
                 let response_array = values
+                    .iter()
+                    .map(|v| RespValue::BulkString(&*v))
+                    .collect::<Vec<_>>();
+                RespValue::Array(response_array).write_async(stream).await?
+            }
+            RedisRequest::Keys(params) => {
+                let keys = match params {
+                    b"*" => {
+                        // All keys.
+                        self.data
+                            .borrow()
+                            .keys()
+                            .map(|k| k.to_owned())
+                            .collect::<Vec<_>>()
+                    }
+                    _ => {
+                        return Err(RedisError::UnknownRequest(format!(
+                            "Only KEYS * supported, got KEYS {}",
+                            String::from_utf8_lossy(params)
+                        )));
+                    }
+                };
+                let response_array = keys
                     .iter()
                     .map(|v| RespValue::BulkString(&*v))
                     .collect::<Vec<_>>();

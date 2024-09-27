@@ -15,6 +15,7 @@ pub(crate) enum RedisRequest<'a> {
     },
     ConfigGet(Vec<&'a [u8]>),
     Get(&'a [u8]),
+    Keys(&'a [u8]),
 }
 
 pub(crate) fn parse_commands<'a>(input: &'a [u8]) -> Result<Vec<RedisRequest<'a>>, RedisError> {
@@ -42,6 +43,7 @@ fn parse_command<'a>(value: RespValue<'a>) -> Result<RedisRequest<'a>, RedisErro
                     b"SET" => parse_set(&values[1..]),
                     b"GET" => parse_get(&values[1..]),
                     b"CONFIG" => parse_config(&values[1..]),
+                    b"KEYS" => parse_keys(&values[1..]),
                     _ => Err(RedisError::UnknownRequest(format!(
                         "Unexpected command name {}",
                         String::from_utf8_lossy(&contents)
@@ -182,6 +184,23 @@ fn parse_command_get<'a>(values: &[RespValue<'a>]) -> Result<RedisRequest<'a>, R
     }
 
     Ok(RedisRequest::ConfigGet(params))
+}
+
+fn parse_keys<'a>(values: &[RespValue<'a>]) -> Result<RedisRequest<'a>, RedisError> {
+    if values.len() != 1 {
+        Err(RedisError::UnexpectedNumberOfArgs(format!(
+            "For KEYS expected 1 args found {}",
+            values.len()
+        )))
+    } else {
+        match values[0] {
+            RespValue::BulkString(pattern) => Ok(RedisRequest::Keys(pattern)),
+            _ => Err(RedisError::UnexpectedArgumentType(format!(
+                "For KEYS expected arguments of type BulkString, BulkString got {}",
+                values[0].type_string(),
+            ))),
+        }
+    }
 }
 
 fn uppercase(value: &[u8]) -> Vec<u8> {
@@ -403,6 +422,21 @@ mod tests {
         ]);
         assert!(matches!(parse_command(values),
             Ok(RedisRequest::ConfigGet(params)) if matches!(params[..], [b"dir", b"max_concurrency"])));
+    }
+
+    #[test]
+    fn parse_keys() {
+        let echo_value = RespValue::Array(vec![
+            RespValue::BulkString(b"KEYS"),
+            RespValue::BulkString(b"*"),
+        ]);
+        let parsed = parse_command(echo_value);
+        assert!(
+            parsed.is_ok(),
+            "Expected ok result, got: {}",
+            parsed.err().unwrap()
+        );
+        assert!(matches!(parsed.unwrap(), RedisRequest::Keys(b"*")));
     }
 
     #[test]
