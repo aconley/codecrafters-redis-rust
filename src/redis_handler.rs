@@ -67,7 +67,7 @@ impl RedisHandler {
         // Use a vec to avoid having a large stack state in the state machine.
         let mut input_buf = vec![0u8; 512];
         loop {
-            let bytes_read = stream.read_to_end(&mut input_buf).await?;
+            let bytes_read = stream.read(&mut input_buf).await?;
             if bytes_read == 0 {
                 break;
             }
