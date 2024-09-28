@@ -17,6 +17,7 @@ pub(crate) enum RespValue<'a> {
 }
 
 impl<'a> RespValue<'a> {
+    #[allow(dead_code)]
     pub(crate) fn write<W: std::io::Write>(&self, writer: &mut W) -> Result<(), RespError> {
         match self {
             RespValue::SimpleString(contents) => {

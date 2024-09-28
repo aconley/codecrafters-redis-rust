@@ -11,7 +11,7 @@ use tokio::net::TcpListener;
 
 use crate::redis_handler::RedisHandler;
 
-const IP_PORT: &str = "127.0.0.1:6379";
+const IP: &str = "127.0.0.1";
 
 #[derive(Parser)]
 struct RedisArgs {
@@ -20,6 +20,9 @@ struct RedisArgs {
 
     #[arg(short, long)]
     dbfilename: Option<String>,
+
+    #[arg(short, long, default_value_t = 6379)]
+    port: i32,
 }
 
 impl RedisArgs {
@@ -31,6 +34,7 @@ impl RedisArgs {
         if let Some(dbfilename) = self.dbfilename {
             result.insert(b"dbfilename".to_vec(), dbfilename.into_bytes());
         }
+        result.insert(b"port".to_vec(), self.port.to_string().into_bytes());
         result
     }
 }
@@ -39,6 +43,7 @@ impl RedisArgs {
 #[tokio::main(worker_threads = 1)]
 async fn main() {
     let args = RedisArgs::parse();
+    let port = args.port;
     let handler = match &args.dbfilename {
         Some(filepath) => {
             let mut fully_qualified_path = std::path::PathBuf::new();
@@ -54,7 +59,8 @@ async fn main() {
             } else {
                 Arc::new(
                     RedisHandler::new_from_file(fully_qualified_path, args.into_config_dict())
-                        .expect("Error reading rdb file"))
+                        .expect("Error reading rdb file"),
+                )
             }
         }
         None => Arc::new(RedisHandler::new_with_contents(
@@ -62,7 +68,8 @@ async fn main() {
             HashMap::new(),
         )),
     };
-    let listener = TcpListener::bind(IP_PORT).await.expect("Error connecting");
+    let addr = format!("{}:{}", IP, port);
+    let listener = TcpListener::bind(addr).await.expect("Error connecting");
 
     loop {
         match listener.accept().await {

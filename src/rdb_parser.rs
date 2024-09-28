@@ -47,7 +47,9 @@ where
                 }
                 RdbValue::MetadataSection { .. } => (),
                 RdbValue::Database(contents) => db = contents,
-                RdbValue::EndOfFile { .. } => return Ok(RedisHandler::new_with_contents(config, db)),
+                RdbValue::EndOfFile { .. } => {
+                    return Ok(RedisHandler::new_with_contents(config, db))
+                }
             }
         }
     }
