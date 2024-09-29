@@ -255,9 +255,16 @@ impl RedisReplicationInfo {
     where
         W: tokio::io::AsyncWriteExt + Unpin,
     {
-        let contents = match self.role {
-            RedisRole::Master => "role:master".to_string(),
-            RedisRole::Slave => "role:slave".to_string(),
+        let mut contents = String::default();
+        match self.role {
+            RedisRole::Master => {
+                contents.push_str("role:master\n");
+                contents.push_str("master_replid:");
+                contents.push_str(&self.master_replid);
+                contents.push_str(&format!("\nmaster_repl_offset:{}", self.master_repl_offset));
+                contents.push_str(&format!("\nconnected_slaves:{}", self.connected_slaves));
+            }
+            RedisRole::Slave => contents.push_str("role:slave"),
         };
         RespValue::BulkString(contents.as_bytes())
             .write_async(writer)

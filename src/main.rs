@@ -5,6 +5,7 @@ mod resp_command;
 mod resp_parser;
 
 use clap::Parser;
+use rand::Rng;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::net::TcpListener;
@@ -46,12 +47,7 @@ impl RedisArgs {
 #[tokio::main(worker_threads = 1)]
 async fn main() {
     let args = RedisArgs::parse();
-
-    let mut replication_info = RedisReplicationInfo::default();
-    replication_info.role = match args.replicaof {
-        Some(..) => redis_handler::RedisRole::Slave,
-        None => redis_handler::RedisRole::Master,
-    };
+    let replication_info = replication_info_from_args(&args);
 
     let handler = match &args.dbfilename {
         Some(filepath) => {
@@ -104,4 +100,23 @@ async fn main() {
             }
         }
     }
+}
+
+fn replication_info_from_args(args: &RedisArgs) -> RedisReplicationInfo {
+    let mut replication_info = RedisReplicationInfo::default();
+    match args.replicaof {
+        Some(..) => {
+            replication_info.role = redis_handler::RedisRole::Slave;
+        }
+        None => {
+            replication_info.role = redis_handler::RedisRole::Master;
+            replication_info.master_replid = rand::thread_rng()
+                .sample_iter(&rand::distributions::Alphanumeric)
+                .take(40)
+                .map(char::from)
+                .collect();
+            replication_info.master_repl_offset = 0;
+        }
+    }
+    replication_info
 }
