@@ -8,7 +8,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncReadExt;
 use tokio::net::TcpStream;
 
 use crate::errors::RedisError;
@@ -20,6 +20,7 @@ use crate::resp_parser::RespValue;
 #[derive(Debug)]
 pub(crate) struct RedisHandler {
     data: RefCell<HashMap<Vec<u8>, ValueType>>,
+    replication_info: RedisReplicationInfo,
     config: RefCell<HashMap<Vec<u8>, Vec<u8>>>,
 }
 
@@ -29,10 +30,25 @@ pub(crate) struct ValueType {
     expiration: Option<SystemTime>,
 }
 
+#[derive(Debug)]
+struct RedisReplicationInfo {
+    role: RedisRole,
+    connected_slaves: u16,
+    master_replid: String,
+    master_repl_offset: u32,
+}
+
+#[derive(Debug)]
+enum RedisRole {
+    Master,
+    Slave,
+}
+
 impl RedisHandler {
     pub(crate) fn new() -> Self {
         RedisHandler {
             data: RefCell::new(HashMap::new()),
+            replication_info: RedisReplicationInfo::default(),
             config: RefCell::new(HashMap::new()),
         }
     }
@@ -43,6 +59,7 @@ impl RedisHandler {
     ) -> Self {
         RedisHandler {
             data: RefCell::new(data),
+            replication_info: RedisReplicationInfo::default(),
             config: RefCell::new(config),
         }
     }
@@ -52,8 +69,11 @@ impl RedisHandler {
         config: HashMap<Vec<u8>, Vec<u8>>,
     ) -> Result<Self, RedisError> {
         let input = std::fs::read(path)?;
-        let mut rdb_reader = RdbReader::new(&input[..]);
-        Ok(rdb_reader.create_handler(config)?)
+        Ok(RedisHandler {
+            data: RefCell::new(RdbReader::new(&input[..]).read_contents()?),
+            replication_info: RedisReplicationInfo::default(),
+            config: RefCell::new(config),
+        })
     }
 
     // Handles all the requests in the stream.
@@ -75,7 +95,9 @@ impl RedisHandler {
                 Ok(requests) => requests,
                 Err(error) => {
                     // There's not much we can do if writing the error fails.
-                    let _ = stream.write_all(format!("{:?}", error).as_bytes()).await;
+                    let _ = RespValue::SimpleError(format!("{:?}", error).as_bytes())
+                        .write_async(stream)
+                        .await;
                     continue;
                 }
             };
@@ -84,7 +106,9 @@ impl RedisHandler {
                 match self.handle_request(request, stream).await {
                     Ok(()) => (),
                     Err(error) => {
-                        let _ = stream.write_all(format!("{:?}", error).as_bytes()).await;
+                        let _ = RespValue::SimpleError(format!("{:?}", error).as_bytes())
+                            .write_async(stream)
+                            .await;
                     }
                 }
             }
@@ -177,6 +201,11 @@ impl RedisHandler {
                     .collect::<Vec<_>>();
                 RespValue::Array(response_array).write_async(stream).await?
             }
+            RedisRequest::Info(None) => self.replication_info.write_async(stream).await?,
+            RedisRequest::Info(Some(info_type)) => match info_type {
+                b"replication" => self.replication_info.write_async(stream).await?,
+                _ => RespValue::NullBulkString.write_async(stream).await?,
+            },
         }
         Ok(())
     }
@@ -218,3 +247,30 @@ impl ValueType {
 
 unsafe impl Send for RedisHandler {}
 unsafe impl Sync for RedisHandler {}
+
+impl RedisReplicationInfo {
+    async fn write_async<W>(&self, writer: &mut W) -> Result<(), RedisError>
+    where
+        W: tokio::io::AsyncWriteExt + Unpin,
+    {
+        let contents = match self.role {
+            RedisRole::Master => "role:master".to_string(),
+            RedisRole::Slave => "role:slave".to_string(),
+        };
+        RespValue::BulkString(contents.as_bytes())
+            .write_async(writer)
+            .await?;
+        Ok(())
+    }
+}
+
+impl Default for RedisReplicationInfo {
+    fn default() -> Self {
+        RedisReplicationInfo {
+            role: RedisRole::Master,
+            connected_slaves: 0,
+            master_replid: String::default(),
+            master_repl_offset: 0,
+        }
+    }
+}

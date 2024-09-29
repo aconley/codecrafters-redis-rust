@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::io::Read;
 
 use crate::errors::RdbFileError;
-use crate::redis_handler::{RedisHandler, ValueType};
+use crate::redis_handler::ValueType;
 
 pub(crate) struct RdbReader<R> {
     reader: R,
@@ -31,11 +31,7 @@ impl<R> RdbReader<R>
 where
     R: Read,
 {
-    // Create a RedisHandler from an input Reader.
-    pub(crate) fn create_handler(
-        &mut self,
-        config: HashMap<Vec<u8>, Vec<u8>>,
-    ) -> Result<RedisHandler, RdbFileError> {
+    pub(crate) fn read_contents(&mut self) -> Result<HashMap<Vec<u8>, ValueType>, RdbFileError> {
         self.read_header()?;
         let mut db = std::collections::HashMap::new();
         loop {
@@ -47,9 +43,7 @@ where
                 }
                 RdbValue::MetadataSection { .. } => (),
                 RdbValue::Database(contents) => db = contents,
-                RdbValue::EndOfFile { .. } => {
-                    return Ok(RedisHandler::new_with_contents(config, db))
-                }
+                RdbValue::EndOfFile { .. } => return Ok(db),
             }
         }
     }

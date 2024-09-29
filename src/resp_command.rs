@@ -16,6 +16,7 @@ pub(crate) enum RedisRequest<'a> {
     ConfigGet(Vec<&'a [u8]>),
     Get(&'a [u8]),
     Keys(&'a [u8]),
+    Info(Option<&'a [u8]>)
 }
 
 pub(crate) fn parse_commands(input: &[u8]) -> Result<Vec<RedisRequest>, RedisError> {
@@ -44,6 +45,7 @@ fn parse_command(value: RespValue) -> Result<RedisRequest, RedisError> {
                     b"GET" => parse_get(&values[1..]),
                     b"CONFIG" => parse_config(&values[1..]),
                     b"KEYS" => parse_keys(&values[1..]),
+                    b"INFO" => parse_info(&values[1..]),
                     _ => Err(RedisError::UnknownRequest(format!(
                         "Unexpected command name {}",
                         String::from_utf8_lossy(contents)
@@ -197,6 +199,25 @@ fn parse_keys<'a>(values: &[RespValue<'a>]) -> Result<RedisRequest<'a>, RedisErr
             RespValue::BulkString(pattern) => Ok(RedisRequest::Keys(pattern)),
             _ => Err(RedisError::UnexpectedArgumentType(format!(
                 "For KEYS expected arguments of type BulkString, BulkString got {}",
+                values[0].type_string(),
+            ))),
+        }
+    }
+}
+
+fn parse_info<'a>(values: &[RespValue<'a>]) -> Result<RedisRequest<'a>, RedisError> {
+    if values.is_empty() {
+        Ok(RedisRequest::Info(None))
+    } else if values.len() > 1 {
+        Err(RedisError::UnexpectedNumberOfArgs(format!(
+            "For INFO expected <= 1 args found {}",
+            values.len()
+        )))
+    } else {
+        match values[0] {
+            RespValue::BulkString(info_type) => Ok(RedisRequest::Info(Some(info_type))),
+            _ => Err(RedisError::UnexpectedArgumentType(format!(
+                "For INFO expected arguments of type BulkString, BulkString got {}",
                 values[0].type_string(),
             ))),
         }
