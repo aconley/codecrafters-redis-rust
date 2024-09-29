@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 
-use crate::redis_handler::RedisHandler;
+use crate::redis_handler::{RedisHandler, RedisReplicationInfo};
 
 const IP: &str = "127.0.0.1";
 
@@ -23,16 +23,19 @@ struct RedisArgs {
 
     #[arg(short, long, default_value_t = 6379)]
     port: i32,
+
+    #[arg(short, long)]
+    replicaof: Option<String>,
 }
 
 impl RedisArgs {
-    fn into_config_dict(self) -> HashMap<Vec<u8>, Vec<u8>> {
+    fn to_config_dict(&self) -> HashMap<Vec<u8>, Vec<u8>> {
         let mut result = HashMap::new();
-        if let Some(dir) = self.dir {
-            result.insert(b"dir".to_vec(), dir.into_bytes());
+        if let Some(dir) = &self.dir {
+            result.insert(b"dir".to_vec(), dir.clone().into_bytes());
         }
-        if let Some(dbfilename) = self.dbfilename {
-            result.insert(b"dbfilename".to_vec(), dbfilename.into_bytes());
+        if let Some(dbfilename) = &self.dbfilename {
+            result.insert(b"dbfilename".to_vec(), dbfilename.clone().into_bytes());
         }
         result.insert(b"port".to_vec(), self.port.to_string().into_bytes());
         result
@@ -43,7 +46,13 @@ impl RedisArgs {
 #[tokio::main(worker_threads = 1)]
 async fn main() {
     let args = RedisArgs::parse();
-    let port = args.port;
+
+    let mut replication_info = RedisReplicationInfo::default();
+    replication_info.role = match args.replicaof {
+        Some(..) => redis_handler::RedisRole::Slave,
+        None => redis_handler::RedisRole::Master,
+    };
+
     let handler = match &args.dbfilename {
         Some(filepath) => {
             let mut fully_qualified_path = std::path::PathBuf::new();
@@ -53,22 +62,28 @@ async fn main() {
             fully_qualified_path.push(filepath);
             if !fully_qualified_path.exists() {
                 Arc::new(RedisHandler::new_with_contents(
-                    args.into_config_dict(),
+                    args.to_config_dict(),
+                    replication_info,
                     HashMap::new(),
                 ))
             } else {
                 Arc::new(
-                    RedisHandler::new_from_file(fully_qualified_path, args.into_config_dict())
-                        .expect("Error reading rdb file"),
+                    RedisHandler::new_from_file(
+                        fully_qualified_path,
+                        replication_info,
+                        args.to_config_dict(),
+                    )
+                    .expect("Error reading rdb file"),
                 )
             }
         }
         None => Arc::new(RedisHandler::new_with_contents(
-            args.into_config_dict(),
+            args.to_config_dict(),
+            replication_info,
             HashMap::new(),
         )),
     };
-    let addr = format!("{}:{}", IP, port);
+    let addr = format!("{}:{}", IP, args.port);
     let listener = TcpListener::bind(addr).await.expect("Error connecting");
 
     loop {

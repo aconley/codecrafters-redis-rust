@@ -31,15 +31,15 @@ pub(crate) struct ValueType {
 }
 
 #[derive(Debug)]
-struct RedisReplicationInfo {
-    role: RedisRole,
-    connected_slaves: u16,
-    master_replid: String,
-    master_repl_offset: u32,
+pub(crate) struct RedisReplicationInfo {
+    pub(crate) role: RedisRole,
+    pub(crate) connected_slaves: u16,
+    pub(crate) master_replid: String,
+    pub(crate) master_repl_offset: u32,
 }
 
 #[derive(Debug)]
-enum RedisRole {
+pub(crate) enum RedisRole {
     Master,
     Slave,
 }
@@ -55,23 +55,25 @@ impl RedisHandler {
 
     pub(crate) fn new_with_contents(
         config: HashMap<Vec<u8>, Vec<u8>>,
+        replication_info: RedisReplicationInfo,
         data: HashMap<Vec<u8>, ValueType>,
     ) -> Self {
         RedisHandler {
             data: RefCell::new(data),
-            replication_info: RedisReplicationInfo::default(),
+            replication_info: replication_info,
             config: RefCell::new(config),
         }
     }
 
     pub(crate) fn new_from_file(
         path: std::path::PathBuf,
+        replication_info: RedisReplicationInfo,
         config: HashMap<Vec<u8>, Vec<u8>>,
     ) -> Result<Self, RedisError> {
         let input = std::fs::read(path)?;
         Ok(RedisHandler {
             data: RefCell::new(RdbReader::new(&input[..]).read_contents()?),
-            replication_info: RedisReplicationInfo::default(),
+            replication_info: replication_info,
             config: RefCell::new(config),
         })
     }
