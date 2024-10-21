@@ -9,6 +9,7 @@ pub(crate) enum RedisError {
     UnexpectedNumberOfArgs(String),
     UnexpectedArgumentType(String),
     RdbParserError(RdbFileError),
+    ReplicationError(String),
 }
 
 /// Errors encountered while parsing RESP values.
@@ -47,6 +48,7 @@ impl std::fmt::Display for RedisError {
                 write!(f, "Unexpected argument type: {}", val)
             }
             RedisError::RdbParserError(inner) => inner.fmt(f),
+            RedisError::ReplicationError(inner) => write!(f, "Redis replication error: {}", inner),
         }
     }
 }

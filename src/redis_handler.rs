@@ -8,13 +8,14 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::io::Read;
 use tokio::io::AsyncReadExt;
 use tokio::net::TcpStream;
 
 use crate::errors::RedisError;
 use crate::rdb_parser::RdbReader;
 use crate::resp_command::{parse_commands, RedisRequest};
-use crate::resp_parser::RespValue;
+use crate::resp_parser::{RespParser, RespValue};
 
 // The data store for Redis.
 #[derive(Debug)]
@@ -218,14 +219,35 @@ impl RedisHandler {
             // Nothing to do.
             return Ok(());
         }
-        let mut stream = std::net::TcpStream::connect(
+        let mut request_response_parser = RequestResponsePairProcessor::new(
             self.replication_info
                 .leader_address
                 .as_ref()
                 .expect("leader_address not populated in Redis follower node"),
         )?;
-        RespValue::Array(vec![RespValue::BulkString(b"PING")]).write(&mut stream)?;
-        Ok(())
+
+        request_response_parser.request_expecting_response(
+            RespValue::Array(vec![RespValue::BulkString(b"PING")]),
+            RespValue::SimpleString(b"PONG"),
+        )?;
+
+        request_response_parser.request_expecting_response(
+            RespValue::Array(vec![
+                RespValue::BulkString(b"REPLCONF"),
+                RespValue::BulkString(b"listening-port"),
+                RespValue::BulkString(b"6380"),
+            ]),
+            RespValue::SimpleString(b"OK"),
+        )?;
+
+        request_response_parser.request_expecting_response(
+            RespValue::Array(vec![
+                RespValue::BulkString(b"REPLCONF"),
+                RespValue::BulkString(b"capa"),
+                RespValue::BulkString(b"psync2"),
+            ]),
+            RespValue::SimpleString(b"OK"),
+        )
     }
 }
 
@@ -298,5 +320,54 @@ impl Default for RedisReplicationInfo {
             leader_repl_offset: 0,
             leader_address: None,
         }
+    }
+}
+
+struct RequestResponsePairProcessor<'a> {
+    stream: std::net::TcpStream,
+    buffer: Vec<u8>,
+    parser: RespParser<'a>,
+}
+
+impl RequestResponsePairProcessor<'_> {
+    fn new(addr: &str) -> Result<RequestResponsePairProcessor, RedisError> {
+        Ok(RequestResponsePairProcessor {
+            stream: std::net::TcpStream::connect(addr)?,
+            buffer: vec![0u8; 128],
+            parser: RespParser::new(),
+        })
+    }
+
+    fn request_expecting_response(
+        &mut self,
+        request: RespValue,
+        expected_response: RespValue,
+    ) -> Result<(), RedisError> {
+        request.write(&mut self.stream)?;
+
+        let bytes_read = self.stream.read(&mut self.buffer)?;
+        if bytes_read == 0 {
+            // Connection closed.
+            eprintln!("Connection closed on replica");
+            return Err(RedisError::ReplicationError(format!(
+                "Replication connection closed unexpectedly after {:?}",
+                request
+            )));
+        }
+        let values = self.parser.get_values(&self.buffer[..bytes_read])?;
+        if values.len() != 1 {
+            return Err(RedisError::ReplicationError(format!(
+                "Expected one response to replication request {:?}, got {}",
+                request,
+                values.len()
+            )));
+        }
+        if values[0] != expected_response {
+            return Err(RedisError::ReplicationError(format!(
+                "Unexpected response during replication to request {:?}; wanted {:?} got {:?}",
+                request, expected_response, values[0]
+            )));
+        }
+        Ok(())
     }
 }
