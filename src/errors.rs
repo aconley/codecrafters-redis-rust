@@ -1,6 +1,6 @@
 /// Error types for Redis implementation.
 
-/// Errors encountered while handling redis requests.
+/// Errors encountered while setting up a redis server or handling requests.
 #[derive(Debug)]
 pub(crate) enum RedisError {
     RespParseError(RespError),

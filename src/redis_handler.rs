@@ -33,15 +33,16 @@ pub(crate) struct ValueType {
 #[derive(Debug)]
 pub(crate) struct RedisReplicationInfo {
     pub(crate) role: RedisRole,
-    pub(crate) connected_slaves: u16,
-    pub(crate) master_replid: String,
-    pub(crate) master_repl_offset: u32,
+    pub(crate) connected_followers: u16,
+    pub(crate) leader_replid: String,
+    pub(crate) leader_repl_offset: u32,
+    pub(crate) leader_address: Option<String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) enum RedisRole {
-    Master,
-    Slave,
+    Leader,
+    Follower,
 }
 
 impl RedisHandler {
@@ -211,6 +212,21 @@ impl RedisHandler {
         }
         Ok(())
     }
+
+    pub(crate) fn configure_replication(&self) -> Result<(), RedisError> {
+        if self.replication_info.role == RedisRole::Leader {
+            // Nothing to do.
+            return Ok(());
+        }
+        let mut stream = std::net::TcpStream::connect(
+            self.replication_info
+                .leader_address
+                .as_ref()
+                .expect("leader_address not populated in Redis follower node"),
+        )?;
+        RespValue::Array(vec![RespValue::BulkString(b"PING")]).write(&mut stream)?;
+        Ok(())
+    }
 }
 
 impl Default for RedisHandler {
@@ -257,14 +273,14 @@ impl RedisReplicationInfo {
     {
         let mut contents = String::default();
         match self.role {
-            RedisRole::Master => {
+            RedisRole::Leader => {
                 contents.push_str("role:master\n");
                 contents.push_str("master_replid:");
-                contents.push_str(&self.master_replid);
-                contents.push_str(&format!("\nmaster_repl_offset:{}", self.master_repl_offset));
-                contents.push_str(&format!("\nconnected_slaves:{}", self.connected_slaves));
+                contents.push_str(&self.leader_replid);
+                contents.push_str(&format!("\nmaster_repl_offset:{}", self.leader_repl_offset));
+                contents.push_str(&format!("\nconnected_slaves:{}", self.connected_followers));
             }
-            RedisRole::Slave => contents.push_str("role:slave"),
+            RedisRole::Follower => contents.push_str("role:slave"),
         };
         RespValue::BulkString(contents.as_bytes())
             .write_async(writer)
@@ -276,10 +292,11 @@ impl RedisReplicationInfo {
 impl Default for RedisReplicationInfo {
     fn default() -> Self {
         RedisReplicationInfo {
-            role: RedisRole::Master,
-            connected_slaves: 0,
-            master_replid: String::default(),
-            master_repl_offset: 0,
+            role: RedisRole::Leader,
+            connected_followers: 0,
+            leader_replid: String::default(),
+            leader_repl_offset: 0,
+            leader_address: None,
         }
     }
 }

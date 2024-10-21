@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 
+use crate::errors::RedisError;
 use crate::redis_handler::{RedisHandler, RedisReplicationInfo};
 
 const IP: &str = "127.0.0.1";
@@ -47,7 +48,8 @@ impl RedisArgs {
 #[tokio::main(worker_threads = 1)]
 async fn main() {
     let args = RedisArgs::parse();
-    let replication_info = replication_info_from_args(&args);
+    let replication_info =
+        replication_info_from_args(&args).expect("Unable to parse replication_info");
 
     let handler = match &args.dbfilename {
         Some(filepath) => {
@@ -79,6 +81,11 @@ async fn main() {
             HashMap::new(),
         )),
     };
+
+    handler
+        .configure_replication()
+        .expect("Unable to set replication");
+
     let addr = format!("{}:{}", IP, args.port);
     let listener = TcpListener::bind(addr).await.expect("Error connecting");
 
@@ -102,21 +109,35 @@ async fn main() {
     }
 }
 
-fn replication_info_from_args(args: &RedisArgs) -> RedisReplicationInfo {
+fn replication_info_from_args(args: &RedisArgs) -> Result<RedisReplicationInfo, RedisError> {
     let mut replication_info = RedisReplicationInfo::default();
     match args.replicaof {
-        Some(..) => {
-            replication_info.role = redis_handler::RedisRole::Slave;
+        Some(ref replicaof) => {
+            replication_info.role = redis_handler::RedisRole::Follower;
+            let replica_elems = replicaof
+                .split_whitespace()
+                .map(|s| s.to_string())
+                .collect::<Vec<String>>();
+            if replica_elems.len() != 2 {
+                return Err(RedisError::UnexpectedNumberOfArgs(format!(
+                    "Expected two components for replicaof, found {} (from {})",
+                    replica_elems.len(),
+                    replicaof
+                )));
+            }
+            replication_info.leader_address =
+                Some(format!("{}:{}", replica_elems[0], replica_elems[1]));
         }
         None => {
-            replication_info.role = redis_handler::RedisRole::Master;
-            replication_info.master_replid = rand::thread_rng()
+            replication_info.role = redis_handler::RedisRole::Leader;
+            replication_info.leader_address = None;
+            replication_info.leader_replid = rand::thread_rng()
                 .sample_iter(&rand::distributions::Alphanumeric)
                 .take(40)
                 .map(char::from)
                 .collect();
-            replication_info.master_repl_offset = 0;
+            replication_info.leader_repl_offset = 0;
         }
     }
-    replication_info
+    Ok(replication_info)
 }

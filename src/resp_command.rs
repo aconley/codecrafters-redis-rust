@@ -16,7 +16,7 @@ pub(crate) enum RedisRequest<'a> {
     ConfigGet(Vec<&'a [u8]>),
     Get(&'a [u8]),
     Keys(&'a [u8]),
-    Info(Option<&'a [u8]>)
+    Info(Option<&'a [u8]>),
 }
 
 pub(crate) fn parse_commands(input: &[u8]) -> Result<Vec<RedisRequest>, RedisError> {
