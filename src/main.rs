@@ -50,42 +50,8 @@ async fn main() {
     let args = RedisArgs::parse();
     let replication_info =
         replication_info_from_args(&args).expect("Unable to parse replication_info");
-
-    let handler = match &args.dbfilename {
-        Some(filepath) => {
-            let mut fully_qualified_path = std::path::PathBuf::new();
-            if let Some(dir) = &args.dir {
-                fully_qualified_path.push(dir);
-            }
-            fully_qualified_path.push(filepath);
-            if !fully_qualified_path.exists() {
-                Arc::new(RedisHandler::new_with_contents(
-                    args.to_config_dict(),
-                    replication_info,
-                    HashMap::new(),
-                ))
-            } else {
-                Arc::new(
-                    RedisHandler::new_from_file(
-                        fully_qualified_path,
-                        replication_info,
-                        args.to_config_dict(),
-                    )
-                    .expect("Error reading rdb file"),
-                )
-            }
-        }
-        None => Arc::new(RedisHandler::new_with_contents(
-            args.to_config_dict(),
-            replication_info,
-            HashMap::new(),
-        )),
-    };
-
-    handler
-        .configure_replication()
-        .expect("Unable to set replication");
-
+    let handler = get_handler(&args, replication_info).expect("Unable to get handler");
+    
     let addr = format!("{}:{}", IP, args.port);
     let listener = TcpListener::bind(addr).await.expect("Error connecting");
 
@@ -107,6 +73,42 @@ async fn main() {
             }
         }
     }
+}
+
+fn get_handler(args: &RedisArgs, replication_info: RedisReplicationInfo) -> Result<Arc<RedisHandler>, RedisError> {
+    let handler = match &args.dbfilename {
+        Some(filepath) => {
+            let mut fully_qualified_path = std::path::PathBuf::new();
+            if let Some(dir) = &args.dir {
+                fully_qualified_path.push(dir);
+            }
+            fully_qualified_path.push(filepath);
+            if !fully_qualified_path.exists() {
+                Arc::new(RedisHandler::new_with_contents(
+                    args.to_config_dict(),
+                    replication_info,
+                    HashMap::new(),
+                ))
+            } else {
+                Arc::new(
+                    RedisHandler::new_from_file(
+                        fully_qualified_path,
+                        replication_info,
+                        args.to_config_dict(),
+                    )?
+                )
+            }
+        }
+        None => Arc::new(RedisHandler::new_with_contents(
+            args.to_config_dict(),
+            replication_info,
+            HashMap::new(),
+        )),
+    };
+
+    handler
+        .configure_replication()?;
+    Ok(handler)
 }
 
 fn replication_info_from_args(args: &RedisArgs) -> Result<RedisReplicationInfo, RedisError> {

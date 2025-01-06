@@ -7,8 +7,8 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::io::Read;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::io::AsyncReadExt;
 use tokio::net::TcpStream;
 
@@ -226,12 +226,12 @@ impl RedisHandler {
                 .expect("leader_address not populated in Redis follower node"),
         )?;
 
-        request_response_parser.request_expecting_response(
+        request_response_parser.request_expecting_exact_response(
             RespValue::Array(vec![RespValue::BulkString(b"PING")]),
             RespValue::SimpleString(b"PONG"),
         )?;
 
-        request_response_parser.request_expecting_response(
+        request_response_parser.request_expecting_exact_response(
             RespValue::Array(vec![
                 RespValue::BulkString(b"REPLCONF"),
                 RespValue::BulkString(b"listening-port"),
@@ -240,13 +240,22 @@ impl RedisHandler {
             RespValue::SimpleString(b"OK"),
         )?;
 
-        request_response_parser.request_expecting_response(
+        request_response_parser.request_expecting_exact_response(
             RespValue::Array(vec![
                 RespValue::BulkString(b"REPLCONF"),
                 RespValue::BulkString(b"capa"),
                 RespValue::BulkString(b"psync2"),
             ]),
             RespValue::SimpleString(b"OK"),
+        )?;
+
+        // PSYNC results in a non-standard response that we can't parse.
+        request_response_parser.request_ignoring_response(
+            RespValue::Array(vec![
+                RespValue::BulkString(b"PSYNC"),
+                RespValue::BulkString(b"?"),
+                RespValue::BulkString(b"-1"),
+            ]),
         )
     }
 }
@@ -338,17 +347,29 @@ impl RequestResponsePairProcessor<'_> {
         })
     }
 
-    fn request_expecting_response(
+    fn request_expecting_exact_response(
         &mut self,
         request: RespValue,
         expected_response: RespValue,
     ) -> Result<(), RedisError> {
+        self.request_expecting_response(request, |v| *v == expected_response)
+    }
+
+    /// Makes the provided request, and checks that the response is a single
+    /// element matching the provided matcher.
+    fn request_expecting_response<F>(
+        &mut self,
+        request: RespValue,
+        expected_response_matcher: F,
+    ) -> Result<(), RedisError>
+    where
+        F: Fn(&RespValue) -> bool,
+    {
         request.write(&mut self.stream)?;
 
         let bytes_read = self.stream.read(&mut self.buffer)?;
         if bytes_read == 0 {
             // Connection closed.
-            eprintln!("Connection closed on replica");
             return Err(RedisError::ReplicationError(format!(
                 "Replication connection closed unexpectedly after {:?}",
                 request
@@ -362,12 +383,20 @@ impl RequestResponsePairProcessor<'_> {
                 values.len()
             )));
         }
-        if values[0] != expected_response {
+        if !expected_response_matcher(&values[0]) {
             return Err(RedisError::ReplicationError(format!(
-                "Unexpected response during replication to request {:?}; wanted {:?} got {:?}",
-                request, expected_response, values[0]
+                "Unexpected response during replication to request {:?}; got {:?}",
+                request, values[0]
             )));
         }
+        Ok(())
+    }
+
+    /// Makes the provided requst, reads the response but ignores it.
+    /// Necessary because PSYNC returns a non-standard response until we are ready to parse.
+    fn request_ignoring_response(&mut self, request: RespValue) -> Result<(), RedisError> {
+        request.write(&mut self.stream)?;
+        self.stream.read(&mut self.buffer)?;
         Ok(())
     }
 }
