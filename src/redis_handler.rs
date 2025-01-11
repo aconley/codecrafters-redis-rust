@@ -210,6 +210,7 @@ impl RedisHandler {
                 b"replication" => self.replication_info.write_async(stream).await?,
                 _ => RespValue::NullBulkString.write_async(stream).await?,
             },
+            RedisRequest::ReplConf(_) => RespValue::SimpleString(b"OK").write_async(stream).await?,
         }
         Ok(())
     }

@@ -1,6 +1,6 @@
 use std::time::{Duration, SystemTime};
 
-use crate::errors::RedisError;
+use crate::errors::{RedisError, RespError};
 use crate::resp_parser::{parse_integer, RespParser, RespValue};
 
 /// Redis commands parsed from RESP.
@@ -17,6 +17,13 @@ pub(crate) enum RedisRequest<'a> {
     Get(&'a [u8]),
     Keys(&'a [u8]),
     Info(Option<&'a [u8]>),
+    ReplConf(ReplConf),
+}
+
+#[derive(PartialEq, Clone, Debug)]
+pub(crate) enum ReplConf {
+    Port(u16),
+    Capa(String),
 }
 
 pub(crate) fn parse_commands(input: &[u8]) -> Result<Vec<RedisRequest>, RedisError> {
@@ -46,6 +53,7 @@ fn parse_command(value: RespValue) -> Result<RedisRequest, RedisError> {
                     b"CONFIG" => parse_config(&values[1..]),
                     b"KEYS" => parse_keys(&values[1..]),
                     b"INFO" => parse_info(&values[1..]),
+                    b"REPLCONF" => parse_replconf(&values[1..]),
                     _ => Err(RedisError::UnknownRequest(format!(
                         "Unexpected command name {}",
                         String::from_utf8_lossy(contents)
@@ -224,6 +232,28 @@ fn parse_info<'a>(values: &[RespValue<'a>]) -> Result<RedisRequest<'a>, RedisErr
     }
 }
 
+fn parse_replconf<'a>(values: &[RespValue<'a>]) -> Result<RedisRequest<'a>, RedisError> {
+    if values.len() != 2 {
+        Err(RedisError::UnexpectedNumberOfArgs(format!(
+            "For REPLCONF expected 2 args found {}",
+            values.len()
+        )))
+    } else {
+        match values[0] {
+            RespValue::BulkString(b"listening-port") => Ok(RedisRequest::ReplConf(ReplConf::Port(
+                parse_u16_from_bulk_string(&values[1])?,
+            ))),
+            RespValue::BulkString(b"capa") => Ok(RedisRequest::ReplConf(ReplConf::Capa(
+                parse_string_from_bulk_string(&values[1])?,
+            ))),
+            _ => Err(RedisError::UnexpectedArgumentType(format!(
+                "For INFO expected arguments of type BulkString, BulkString got {}",
+                values[0].type_string(),
+            ))),
+        }
+    }
+}
+
 fn uppercase(value: &[u8]) -> Vec<u8> {
     value.iter().map(|u| u.to_ascii_uppercase()).collect()
 }
@@ -239,6 +269,34 @@ fn parse_expiration(
         _ => Err(RedisError::UnknownRequest(format!(
             "For SET, unexpected expiry spec {}",
             String::from_utf8_lossy(expiration_type)
+        ))),
+    }
+}
+
+fn parse_u16_from_bulk_string(input: &RespValue) -> Result<u16, RedisError>
+{
+    match input {
+        RespValue::BulkString(value) => std::str::from_utf8(value)
+            .map_err(|e| RedisError::RespParseError(RespError::StringParseFailure(e)))
+            .and_then(|s| {
+                s.parse::<u16>()
+                    .map_err(|e| RedisError::RespParseError(RespError::IntParseFailure(e)))
+            }),
+        _ => Err(RedisError::UnexpectedArgumentType(format!(
+            "Expected bulk string, got {}",
+            input.type_string()
+        ))),
+    }
+}
+
+fn parse_string_from_bulk_string(input: &RespValue) -> Result<String, RedisError> {
+    match input {
+        RespValue::BulkString(value) => std::str::from_utf8(value)
+            .map_err(|e| RedisError::RespParseError(RespError::StringParseFailure(e)))
+            .map(|s| s.to_string()),
+        _ => Err(RedisError::UnexpectedArgumentType(format!(
+            "Expected bulk string, got {}",
+            input.type_string()
         ))),
     }
 }
@@ -459,6 +517,60 @@ mod tests {
         );
         assert!(matches!(parsed.unwrap(), RedisRequest::Keys(b"*")));
     }
+
+    #[test]
+    fn parse_replconf_port() {
+        let replconf_value = RespValue::Array(vec![
+            RespValue::BulkString(b"REPLCONF"),
+            RespValue::BulkString(b"listening-port"),
+            RespValue::BulkString(b"1234"),
+        ]);
+
+        let parsed = parse_command(replconf_value);
+
+        assert!(
+            parsed.is_ok(),
+            "Expected ok result, got: {}",
+            parsed.err().unwrap()
+        );
+        assert!(matches!(parsed.unwrap(), RedisRequest::ReplConf(ReplConf::Port(1234))));
+    }
+
+    #[test]
+    fn parse_replconf_capa() {
+        let replconf_value = RespValue::Array(vec![
+            RespValue::BulkString(b"REPLCONF"),
+            RespValue::BulkString(b"capa"),
+            RespValue::BulkString(b"psync2"),
+        ]);
+
+        let parsed = parse_command(replconf_value);
+
+        assert!(
+            parsed.is_ok(),
+            "Expected ok result, got: {}",
+            parsed.err().unwrap()
+        );
+        match parsed.unwrap() {
+            RedisRequest::ReplConf(ReplConf::Capa(val)) => assert_eq!(val, "psync2"),
+            a@_ => panic!("Unexpected value type {:?}", a),
+        }
+    }
+
+    #[test]
+    fn parse_replconf_unknown() {
+        let replconf_value = RespValue::Array(vec![
+            RespValue::BulkString(b"REPLCONF"),
+            RespValue::BulkString(b"unknown"),
+            RespValue::BulkString(b"psync"),
+        ]);
+
+
+        assert!(matches!(
+            parse_command(replconf_value),
+            Err(RedisError::UnexpectedArgumentType(_))
+        ));
+   }
 
     #[test]
     fn parse_single_command() {
