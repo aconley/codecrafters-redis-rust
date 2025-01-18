@@ -107,6 +107,12 @@ impl From<std::io::Error> for RespError {
     }
 }
 
+impl From<std::convert::Infallible> for RespError {
+    fn from(_from: std::convert::Infallible) -> Self {
+        unreachable!("Got infallible error in error conversion")
+    }
+}
+
 impl std::fmt::Display for RdbFileError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {

@@ -249,10 +249,10 @@ fn parse_replconf<'a>(values: &[RespValue<'a>]) -> Result<RedisRequest<'a>, Redi
     } else {
         match values[0] {
             RespValue::BulkString(b"listening-port") => Ok(RedisRequest::ReplConf(ReplConf::Port(
-                parse_u16_from_bulk_string(&values[1])?,
+                parse_from_bulk_string::<u16>(&values[1])?,
             ))),
             RespValue::BulkString(b"capa") => Ok(RedisRequest::ReplConf(ReplConf::Capa(
-                parse_string_from_bulk_string(&values[1])?,
+                parse_from_bulk_string::<String>(&values[1])?,
             ))),
             _ => Err(RedisError::UnexpectedArgumentType(format!(
                 "For INFO expected arguments of type BulkString, BulkString got {}",
@@ -269,8 +269,8 @@ fn parse_psync<'a>(values: &[RespValue<'a>]) -> Result<RedisRequest<'a>, RedisEr
             values.len()
         )))
     } else {
-        let replid = parse_string_from_bulk_string(&values[0])?;
-        let offset = parse_i32_from_bulk_string(&values[1])?;
+        let replid = parse_from_bulk_string::<String>(&values[0])?;
+        let offset = parse_from_bulk_string::<i32>(&values[1])?;
         Ok(RedisRequest::Psync(Psync { replid, offset }))
     }
 }
@@ -294,44 +294,18 @@ fn parse_expiration(
     }
 }
 
-fn parse_u16_from_bulk_string(input: &RespValue) -> Result<u16, RedisError>
+fn parse_from_bulk_string<T: std::str::FromStr>(input: &RespValue) -> Result<T, RedisError>
+where
+    T: std::str::FromStr,
+    <T as std::str::FromStr>::Err: Into<RespError>,
 {
     match input {
         RespValue::BulkString(value) => std::str::from_utf8(value)
             .map_err(|e| RedisError::RespParseError(RespError::StringParseFailure(e)))
             .and_then(|s| {
-                s.parse::<u16>()
-                    .map_err(|e| RedisError::RespParseError(RespError::IntParseFailure(e)))
+                s.parse::<T>()
+                    .map_err(|e| RedisError::RespParseError(e.into()))
             }),
-        _ => Err(RedisError::UnexpectedArgumentType(format!(
-            "Expected bulk string, got {}",
-            input.type_string()
-        ))),
-    }
-}
-
-fn parse_i32_from_bulk_string(input: &RespValue) -> Result<i32, RedisError>
-{
-    match input {
-        RespValue::BulkString(value) => std::str::from_utf8(value)
-            .map_err(|e| RedisError::RespParseError(RespError::StringParseFailure(e)))
-            .and_then(|s| {
-                s.parse::<i32>()
-                    .map_err(|e| RedisError::RespParseError(RespError::IntParseFailure(e)))
-            }),
-        _ => Err(RedisError::UnexpectedArgumentType(format!(
-            "Expected bulk string, got {}",
-            input.type_string()
-        ))),
-    }
-}
-
-
-fn parse_string_from_bulk_string(input: &RespValue) -> Result<String, RedisError> {
-    match input {
-        RespValue::BulkString(value) => std::str::from_utf8(value)
-            .map_err(|e| RedisError::RespParseError(RespError::StringParseFailure(e)))
-            .map(|s| s.to_string()),
         _ => Err(RedisError::UnexpectedArgumentType(format!(
             "Expected bulk string, got {}",
             input.type_string()
