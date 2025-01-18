@@ -18,12 +18,19 @@ pub(crate) enum RedisRequest<'a> {
     Keys(&'a [u8]),
     Info(Option<&'a [u8]>),
     ReplConf(ReplConf),
+    Psync(Psync),
 }
 
 #[derive(PartialEq, Clone, Debug)]
 pub(crate) enum ReplConf {
     Port(u16),
     Capa(String),
+}
+
+#[derive(PartialEq, Clone, Debug)]
+pub(crate) struct Psync {
+    pub replid: String,
+    pub offset: i32,
 }
 
 pub(crate) fn parse_commands(input: &[u8]) -> Result<Vec<RedisRequest>, RedisError> {
@@ -54,6 +61,7 @@ fn parse_command(value: RespValue) -> Result<RedisRequest, RedisError> {
                     b"KEYS" => parse_keys(&values[1..]),
                     b"INFO" => parse_info(&values[1..]),
                     b"REPLCONF" => parse_replconf(&values[1..]),
+                    b"PSYNC" => parse_psync(&values[1..]),
                     _ => Err(RedisError::UnknownRequest(format!(
                         "Unexpected command name {}",
                         String::from_utf8_lossy(contents)
@@ -254,6 +262,19 @@ fn parse_replconf<'a>(values: &[RespValue<'a>]) -> Result<RedisRequest<'a>, Redi
     }
 }
 
+fn parse_psync<'a>(values: &[RespValue<'a>]) -> Result<RedisRequest<'a>, RedisError> {
+    if values.len() != 2 {
+        Err(RedisError::UnexpectedNumberOfArgs(format!(
+            "For PSYNC expected 2 args found {}",
+            values.len()
+        )))
+    } else {
+        let replid = parse_string_from_bulk_string(&values[0])?;
+        let offset = parse_i32_from_bulk_string(&values[1])?;
+        Ok(RedisRequest::Psync(Psync { replid, offset }))
+    }
+}
+
 fn uppercase(value: &[u8]) -> Vec<u8> {
     value.iter().map(|u| u.to_ascii_uppercase()).collect()
 }
@@ -288,6 +309,23 @@ fn parse_u16_from_bulk_string(input: &RespValue) -> Result<u16, RedisError>
         ))),
     }
 }
+
+fn parse_i32_from_bulk_string(input: &RespValue) -> Result<i32, RedisError>
+{
+    match input {
+        RespValue::BulkString(value) => std::str::from_utf8(value)
+            .map_err(|e| RedisError::RespParseError(RespError::StringParseFailure(e)))
+            .and_then(|s| {
+                s.parse::<i32>()
+                    .map_err(|e| RedisError::RespParseError(RespError::IntParseFailure(e)))
+            }),
+        _ => Err(RedisError::UnexpectedArgumentType(format!(
+            "Expected bulk string, got {}",
+            input.type_string()
+        ))),
+    }
+}
+
 
 fn parse_string_from_bulk_string(input: &RespValue) -> Result<String, RedisError> {
     match input {
@@ -571,6 +609,30 @@ mod tests {
             Err(RedisError::UnexpectedArgumentType(_))
         ));
    }
+
+    #[test]
+    fn parse_psync() {
+        let replconf_value = RespValue::Array(vec![
+            RespValue::BulkString(b"PSYNC"),
+            RespValue::BulkString(b"?"),
+            RespValue::BulkString(b"-1"),
+        ]);
+
+        let parsed = parse_command(replconf_value);
+
+        assert!(
+            parsed.is_ok(),
+            "Expected ok result, got: {}",
+            parsed.err().unwrap()
+        );
+        match parsed.unwrap() {
+            RedisRequest::Psync(Psync{replid, offset}) => {
+                assert_eq!(replid, "?");
+                assert_eq!(offset, -1);
+            }
+            a@_ => panic!("Unexpected value type {:?}", a),
+        }
+    }
 
     #[test]
     fn parse_single_command() {

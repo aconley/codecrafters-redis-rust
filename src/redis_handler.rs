@@ -14,7 +14,7 @@ use tokio::net::TcpStream;
 
 use crate::errors::RedisError;
 use crate::rdb_parser::RdbReader;
-use crate::resp_command::{parse_commands, RedisRequest};
+use crate::resp_command::{parse_commands, RedisRequest, Psync};
 use crate::resp_parser::{RespParser, RespValue};
 
 // The data store for Redis.
@@ -211,6 +211,24 @@ impl RedisHandler {
                 _ => RespValue::NullBulkString.write_async(stream).await?,
             },
             RedisRequest::ReplConf(_) => RespValue::SimpleString(b"OK").write_async(stream).await?,
+            RedisRequest::Psync(Psync { ref replid, offset }) => match (replid, offset) {
+                (replid, -1) if replid == "?" => {
+                    RespValue::SimpleString(
+                        format!(
+                            "FULLRESYNC {} {}",
+                            self.replication_info.leader_replid,
+                            self.replication_info.leader_repl_offset
+                        )
+                        .as_bytes(),
+                    )
+                    .write_async(stream)
+                    .await?
+                }
+                _ => return Err(RedisError::UnknownRequest(format!(
+                    "Unexpected psync replid {} offset {}",
+                    replid, offset
+                ))),
+            },
         }
         Ok(())
     }
@@ -251,13 +269,11 @@ impl RedisHandler {
         )?;
 
         // PSYNC results in a non-standard response that we can't parse.
-        request_response_parser.request_ignoring_response(
-            RespValue::Array(vec![
-                RespValue::BulkString(b"PSYNC"),
-                RespValue::BulkString(b"?"),
-                RespValue::BulkString(b"-1"),
-            ]),
-        )
+        request_response_parser.request_ignoring_response(RespValue::Array(vec![
+            RespValue::BulkString(b"PSYNC"),
+            RespValue::BulkString(b"?"),
+            RespValue::BulkString(b"-1"),
+        ]))
     }
 }
 
