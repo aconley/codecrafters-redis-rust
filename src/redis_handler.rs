@@ -9,12 +9,15 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::Read;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
 use tokio::io::AsyncReadExt;
 use tokio::net::TcpStream;
 
+use base64::Engine;
+
 use crate::errors::RedisError;
 use crate::rdb_parser::RdbReader;
-use crate::resp_command::{parse_commands, RedisRequest, Psync};
+use crate::resp_command::{parse_commands, Psync, RedisRequest};
 use crate::resp_parser::{RespParser, RespValue};
 
 // The data store for Redis.
@@ -222,12 +225,15 @@ impl RedisHandler {
                         .as_bytes(),
                     )
                     .write_async(stream)
-                    .await?
+                    .await?;
+                    write_empty_file(stream).await?
                 }
-                _ => return Err(RedisError::UnknownRequest(format!(
-                    "Unexpected psync replid {} offset {}",
-                    replid, offset
-                ))),
+                _ => {
+                    return Err(RedisError::UnknownRequest(format!(
+                        "Unexpected psync replid {} offset {}",
+                        replid, offset
+                    )))
+                }
             },
         }
         Ok(())
@@ -313,6 +319,21 @@ impl ValueType {
 
 unsafe impl Send for RedisHandler {}
 unsafe impl Sync for RedisHandler {}
+
+const EMPTY_FILE_BASE64 : &str = "UkVESVMwMDEx+glyZWRpcy12ZXIFNy4yLjD6CnJlZGlzLWJpdHPAQPoFY3RpbWXCbQi8ZfoIdXNlZC1tZW3CsMQQAPoIYW9mLWJhc2XAAP/wbjv+wP9aog==";
+
+pub(crate) async fn write_empty_file<W>(writer: &mut W) -> std::io::Result<()>
+where
+    W: tokio::io::AsyncWriteExt + Unpin,
+{
+    // This is like bulk string but with no trailing \r\n
+    let file_contents = base64::engine::general_purpose::STANDARD.decode(EMPTY_FILE_BASE64).expect("invalid base64 empty file");
+    writer.write_u8(b'$').await?;
+    writer.write_all(format!("{}", file_contents.len()).as_bytes()).await?;
+    writer.write_all(b"\r\n").await?;
+    writer.write_all(&file_contents).await?;
+    Ok(())
+}
 
 impl RedisReplicationInfo {
     async fn write_async<W>(&self, writer: &mut W) -> Result<(), RedisError>
