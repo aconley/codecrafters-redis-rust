@@ -1,4 +1,4 @@
-/// Error types for Redis implementation.
+// Error types for Redis implementation.
 
 /// Errors encountered while setting up a redis server or handling requests.
 #[derive(Debug)]

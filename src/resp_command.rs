@@ -112,7 +112,7 @@ impl RedisRequest<'_> {
             RedisRequest::Psync(psync) => {
                 let mut array = Vec::new();
                 array.push(RespValue::BulkString(b"PSYNC"));
-                array.push(RespValue::OwningBulkString(format!("{}", psync.replid)));
+                array.push(RespValue::OwningBulkString(psync.replid.to_string()));
                 array.push(RespValue::OwningBulkString(format!("{}", psync.offset)));
                 RespValue::Array(array)
             }
@@ -374,7 +374,7 @@ fn parse_expiration(
     }
 }
 
-fn parse_from_bulk_string<T: std::str::FromStr>(input: &RespValue) -> Result<T, RedisError>
+fn parse_from_bulk_string<T>(input: &RespValue) -> Result<T, RedisError>
 where
     T: std::str::FromStr,
     <T as std::str::FromStr>::Err: Into<RespError>,

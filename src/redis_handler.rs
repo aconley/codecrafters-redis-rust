@@ -69,7 +69,7 @@ impl RedisHandler {
     ) -> Self {
         RedisHandler {
             data: RefCell::new(data),
-            replication_info: replication_info,
+            replication_info,
             followers: Arc::new(Vec::new()),
             config: RefCell::new(config),
         }
@@ -83,7 +83,7 @@ impl RedisHandler {
         let input = std::fs::read(path)?;
         Ok(RedisHandler {
             data: RefCell::new(RdbReader::new(&input[..]).read_contents()?),
-            replication_info: replication_info,
+            replication_info,
             followers: Arc::new(Vec::new()),
             config: RefCell::new(config),
         })
@@ -330,7 +330,7 @@ impl ValueType {
 
     fn is_expired(&self) -> bool {
         self.expiration
-            .map_or(false, |expiration| SystemTime::now() > expiration)
+            .is_some_and(|expiration| SystemTime::now() > expiration)
     }
 }
 
@@ -451,11 +451,12 @@ impl RequestResponsePairProcessor<'_> {
         Ok(())
     }
 
-    /// Makes the provided requst, reads the response but ignores it.
+    /// Makes the provided request, reads the response but ignores it.
+    ///
     /// Necessary because PSYNC returns a non-standard response until we are ready to parse.
     fn request_ignoring_response(&mut self, request: RespValue) -> Result<(), RedisError> {
         request.write(&mut self.stream)?;
-        self.stream.read(&mut self.buffer)?;
+        let _ = self.stream.read(&mut self.buffer)?;
         Ok(())
     }
 }
