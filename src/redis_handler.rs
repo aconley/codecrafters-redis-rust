@@ -8,10 +8,12 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::Read;
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use tokio::io::AsyncReadExt;
 use tokio::net::TcpStream;
+use tokio::sync::Mutex;
 
 use base64::Engine;
 
@@ -25,6 +27,7 @@ use crate::resp_parser::{RespParser, RespValue};
 pub(crate) struct RedisHandler {
     data: RefCell<HashMap<Vec<u8>, ValueType>>,
     replication_info: RedisReplicationInfo,
+    followers: Arc<Vec<Mutex<TcpStream>>>,
     config: RefCell<HashMap<Vec<u8>, Vec<u8>>>,
 }
 
@@ -54,6 +57,7 @@ impl RedisHandler {
         RedisHandler {
             data: RefCell::new(HashMap::new()),
             replication_info: RedisReplicationInfo::default(),
+            followers: Arc::new(Vec::new()),
             config: RefCell::new(HashMap::new()),
         }
     }
@@ -66,6 +70,7 @@ impl RedisHandler {
         RedisHandler {
             data: RefCell::new(data),
             replication_info: replication_info,
+            followers: Arc::new(Vec::new()),
             config: RefCell::new(config),
         }
     }
@@ -79,6 +84,7 @@ impl RedisHandler {
         Ok(RedisHandler {
             data: RefCell::new(RdbReader::new(&input[..]).read_contents()?),
             replication_info: replication_info,
+            followers: Arc::new(Vec::new()),
             config: RefCell::new(config),
         })
     }
@@ -89,7 +95,7 @@ impl RedisHandler {
     // contents are not protected by a lock.
     pub(crate) async unsafe fn handle_requests(
         &self,
-        stream: &mut TcpStream,
+        mut stream: TcpStream,
     ) -> Result<(), RedisError> {
         // Use a vec to avoid having a large stack state in the state machine.
         let mut input_buf = vec![0u8; 512];
@@ -103,18 +109,18 @@ impl RedisHandler {
                 Err(error) => {
                     // There's not much we can do if writing the error fails.
                     let _ = RespValue::SimpleError(format!("{:?}", error).as_bytes())
-                        .write_async(stream)
+                        .write_async(&mut stream)
                         .await;
                     continue;
                 }
             };
 
             for request in requests {
-                match self.handle_request(request, stream).await {
+                match self.handle_request(request, &mut stream).await {
                     Ok(()) => (),
                     Err(error) => {
                         let _ = RespValue::SimpleError(format!("{:?}", error).as_bytes())
-                            .write_async(stream)
+                            .write_async(&mut stream)
                             .await;
                     }
                 }
@@ -124,6 +130,8 @@ impl RedisHandler {
     }
 
     // Handles a single request, writing the result to the provided stream.
+    //
+    // Unsafe because it requires that the async pool executing it is single threaded.
     async unsafe fn handle_request<'a>(
         &self,
         request: RedisRequest<'a>,
@@ -146,7 +154,7 @@ impl RedisHandler {
                         expiration,
                     },
                 );
-                RespValue::SimpleString(b"OK").write_async(stream).await?;
+                self.replicate_to_followers(request).await?;
             }
             RedisRequest::Get(key) => {
                 // We have to make a copy of the value, because while we are paused on the await, another
@@ -239,6 +247,15 @@ impl RedisHandler {
         Ok(())
     }
 
+    async fn replicate_to_followers(&self, request: RedisRequest<'_>) -> Result<(), RedisError> {
+        let request_value = request.to_value();
+        for follower in self.followers.iter() {
+            let mut lock = follower.lock().await;
+            request_value.write_async(&mut *lock).await?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn configure_replication(&self) -> Result<(), RedisError> {
         if self.replication_info.role == RedisRole::Leader {
             // Nothing to do.
@@ -327,9 +344,13 @@ where
     W: tokio::io::AsyncWriteExt + Unpin,
 {
     // This is like bulk string but with no trailing \r\n
-    let file_contents = base64::engine::general_purpose::STANDARD.decode(EMPTY_FILE_BASE64).expect("invalid base64 empty file");
+    let file_contents = base64::engine::general_purpose::STANDARD
+        .decode(EMPTY_FILE_BASE64)
+        .expect("invalid base64 empty file");
     writer.write_u8(b'$').await?;
-    writer.write_all(format!("{}", file_contents.len()).as_bytes()).await?;
+    writer
+        .write_all(format!("{}", file_contents.len()).as_bytes())
+        .await?;
     writer.write_all(b"\r\n").await?;
     writer.write_all(&file_contents).await?;
     Ok(())

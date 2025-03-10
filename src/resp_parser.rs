@@ -11,6 +11,8 @@ pub(crate) enum RespValue<'a> {
     SimpleError(&'a [u8]),
     SimpleInteger(i64),
     BulkString(&'a [u8]),
+    // A version of BulkString that owns it's contents.
+    OwningBulkString(String),
     NullBulkString,
     Array(Vec<RespValue<'a>>),
     NullArray,
@@ -39,6 +41,13 @@ impl<'a> RespValue<'a> {
                 writer.write_all(format!("{}", contents.len()).as_bytes())?;
                 writer.write_all(SEPARATOR)?;
                 writer.write_all(contents)?;
+                writer.write_all(SEPARATOR)?;
+            }
+            RespValue::OwningBulkString(contents) => {
+                writer.write_all(b"$")?;
+                writer.write_all(format!("{}", contents.len()).as_bytes())?;
+                writer.write_all(SEPARATOR)?;
+                writer.write_all(contents.as_bytes())?;
                 writer.write_all(SEPARATOR)?;
             }
             RespValue::NullBulkString => writer.write_all(b"$-1\r\n")?,
@@ -84,6 +93,15 @@ impl<'a> RespValue<'a> {
                 writer.write_all(contents).await?;
                 writer.write_all(SEPARATOR).await?;
             }
+            RespValue::OwningBulkString(contents) => {
+                writer.write_u8(b'$').await?;
+                writer
+                    .write_all(format!("{}", contents.len()).as_bytes())
+                    .await?;
+                writer.write_all(SEPARATOR).await?;
+                writer.write_all(contents.as_bytes()).await?;
+                writer.write_all(SEPARATOR).await?;
+            }
             RespValue::NullBulkString => writer.write_all(b"$-1\r\n").await?,
             RespValue::Array(vals) => {
                 writer.write_u8(b'*').await?;
@@ -106,6 +124,7 @@ impl<'a> RespValue<'a> {
             RespValue::SimpleError(_) => "SimpleError".to_string(),
             RespValue::SimpleInteger(_) => "SimpleInteger".to_string(),
             RespValue::BulkString(_) => "BulkString".to_string(),
+            RespValue::OwningBulkString(_) => "OwningBulkString".to_string(),
             RespValue::NullBulkString => "NullBulkString".to_string(),
             RespValue::Array(_) => "Array".to_string(),
             RespValue::NullArray => "NullArray".to_string(),

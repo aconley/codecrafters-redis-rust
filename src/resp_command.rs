@@ -45,6 +45,81 @@ pub(crate) fn parse_commands(input: &[u8]) -> Result<Vec<RedisRequest>, RedisErr
     Ok(requests)
 }
 
+impl RedisRequest<'_> {
+    pub(crate) fn to_value(&self) -> RespValue {
+        match self {
+            RedisRequest::Ping => RespValue::Array(vec![RespValue::BulkString(b"PING")]),
+            RedisRequest::Echo(contents) => RespValue::Array(vec![RespValue::BulkString(contents)]),
+            RedisRequest::Set {
+                key,
+                value,
+                expiration,
+            } => {
+                let mut array = Vec::new();
+                array.push(RespValue::BulkString(b"SET"));
+                array.push(RespValue::BulkString(key));
+                array.push(RespValue::BulkString(value));
+                if let Some(expiration) = expiration {
+                    array.push(RespValue::BulkString(b"PXAX"));
+                    array.push(RespValue::OwningBulkString(
+                        expiration
+                            .duration_since(SystemTime::UNIX_EPOCH)
+                            .expect("Couldn't compute duration since unix epoch")
+                            .as_millis()
+                            .to_string()
+                    ));
+                }
+                RespValue::Array(array)
+            }
+            RedisRequest::Get(key) => RespValue::Array(vec![
+                RespValue::BulkString(b"GET"),
+                RespValue::BulkString(key),
+            ]),
+            RedisRequest::ConfigGet(params) => {
+                let mut array = Vec::new();
+                array.push(RespValue::BulkString(b"CONFIG"));
+                for param in params {
+                    array.push(RespValue::BulkString(param));
+                }
+                RespValue::Array(array)
+            }
+            RedisRequest::Keys(pattern) => RespValue::Array(vec![
+                RespValue::BulkString(b"KEYS"),
+                RespValue::BulkString(pattern),
+            ]),
+            RedisRequest::Info(info_type) => match info_type {
+                Some(info_type) => RespValue::Array(vec![
+                    RespValue::BulkString(b"INFO"),
+                    RespValue::BulkString(info_type),
+                ]),
+                None => RespValue::Array(vec![RespValue::BulkString(b"INFO")]),
+            },
+            RedisRequest::ReplConf(repl_conf) => {
+                let mut array = Vec::new();
+                array.push(RespValue::BulkString(b"REPLCONF"));
+                match repl_conf {
+                    ReplConf::Port(port) => {
+                        array.push(RespValue::BulkString(b"listening-port"));
+                        array.push(RespValue::OwningBulkString(format!("{}", port)));
+                    }
+                    ReplConf::Capa(capa) => {
+                        array.push(RespValue::BulkString(b"capa"));
+                        array.push(RespValue::BulkString(capa.as_bytes()));
+                    }
+                }
+                RespValue::Array(array)
+            }
+            RedisRequest::Psync(psync) => {
+                let mut array = Vec::new();
+                array.push(RespValue::BulkString(b"PSYNC"));
+                array.push(RespValue::OwningBulkString(format!("{}", psync.replid)));
+                array.push(RespValue::OwningBulkString(format!("{}", psync.offset)));
+                RespValue::Array(array)
+            }
+        }
+    }
+}
+
 fn parse_command(value: RespValue) -> Result<RedisRequest, RedisError> {
     match value {
         RespValue::Array(values) => {
@@ -111,10 +186,11 @@ fn parse_echo<'a>(values: &[RespValue<'a>]) -> Result<RedisRequest<'a>, RedisErr
 fn parse_set<'a>(values: &[RespValue<'a>]) -> Result<RedisRequest<'a>, RedisError> {
     if values.len() != 2 && values.len() != 4 {
         return Err(RedisError::UnexpectedNumberOfArgs(format!(
-            "For ECHO expected 2 args found {}",
+            "For SET expected 2 args found {}",
             values.len()
         )));
     };
+    // Version without expiration.
     if values.len() == 2 {
         return match (&values[0], &values[1]) {
             (RespValue::BulkString(key), RespValue::BulkString(value)) => Ok(RedisRequest::Set {
@@ -123,7 +199,7 @@ fn parse_set<'a>(values: &[RespValue<'a>]) -> Result<RedisRequest<'a>, RedisErro
                 expiration: None,
             }),
             _ => Err(RedisError::UnexpectedArgumentType(format!(
-                "For PUT expected arguments of type BulkString, BulkString got {},{}",
+                "For SET expected arguments of type BulkString, BulkString got {},{}",
                 values[0].type_string(),
                 values[1].type_string()
             ))),
@@ -141,7 +217,7 @@ fn parse_set<'a>(values: &[RespValue<'a>]) -> Result<RedisRequest<'a>, RedisErro
                 expiration: Some(parse_expiration(expiration_type, expiration_value)?)
             }),
         _ => Err(RedisError::UnexpectedArgumentType(format!(
-            "For PUT with expriation expected arguments of type 4x BulkString, BulkString got {},{}, {}, {}",
+            "For SET with expriation expected arguments of type 4x BulkString, BulkString got {}, {}, {}, {}",
             values[0].type_string(),
             values[1].type_string(),
             values[2].type_string(),
@@ -286,6 +362,10 @@ fn parse_expiration(
     match &uppercase(expiration_type)[..] {
         b"PX" => {
             Ok(SystemTime::now() + Duration::from_millis(parse_integer(expiration_value)? as u64))
+        }
+        b"PXAT" => {
+            Ok(SystemTime::UNIX_EPOCH
+                + Duration::from_millis(parse_integer(expiration_value)? as u64))
         }
         _ => Err(RedisError::UnknownRequest(format!(
             "For SET, unexpected expiry spec {}",
@@ -545,7 +625,10 @@ mod tests {
             "Expected ok result, got: {}",
             parsed.err().unwrap()
         );
-        assert!(matches!(parsed.unwrap(), RedisRequest::ReplConf(ReplConf::Port(1234))));
+        assert!(matches!(
+            parsed.unwrap(),
+            RedisRequest::ReplConf(ReplConf::Port(1234))
+        ));
     }
 
     #[test]
@@ -565,7 +648,7 @@ mod tests {
         );
         match parsed.unwrap() {
             RedisRequest::ReplConf(ReplConf::Capa(val)) => assert_eq!(val, "psync2"),
-            a@_ => panic!("Unexpected value type {:?}", a),
+            a @ _ => panic!("Unexpected value type {:?}", a),
         }
     }
 
@@ -577,12 +660,11 @@ mod tests {
             RespValue::BulkString(b"psync"),
         ]);
 
-
         assert!(matches!(
             parse_command(replconf_value),
             Err(RedisError::UnexpectedArgumentType(_))
         ));
-   }
+    }
 
     #[test]
     fn parse_psync() {
@@ -600,11 +682,11 @@ mod tests {
             parsed.err().unwrap()
         );
         match parsed.unwrap() {
-            RedisRequest::Psync(Psync{replid, offset}) => {
+            RedisRequest::Psync(Psync { replid, offset }) => {
                 assert_eq!(replid, "?");
                 assert_eq!(offset, -1);
             }
-            a@_ => panic!("Unexpected value type {:?}", a),
+            a @ _ => panic!("Unexpected value type {:?}", a),
         }
     }
 

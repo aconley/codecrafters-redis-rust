@@ -57,12 +57,12 @@ async fn main() {
 
     loop {
         match listener.accept().await {
-            Ok((mut stream, addr)) => {
+            Ok((stream, addr)) => {
                 println!("accepted new connection from {}", addr);
                 let h = handler.clone();
                 tokio::spawn(async move {
                     unsafe {
-                        h.handle_requests(&mut stream)
+                        h.handle_requests(stream)
                             .await
                             .expect("Error handling message");
                     }
