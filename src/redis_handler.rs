@@ -5,15 +5,13 @@
 // idea, but follows the actual Redis model, which uses a single thread
 // to avoid locking overheads.
 
-use std::cell::RefCell;
+use std::cell::{RefCell, UnsafeCell};
 use std::collections::HashMap;
 use std::io::Read;
-use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use tokio::io::AsyncReadExt;
 use tokio::net::TcpStream;
-use tokio::sync::Mutex;
 
 use base64::Engine;
 
@@ -27,7 +25,7 @@ use crate::resp_parser::{RespParser, RespValue};
 pub(crate) struct RedisHandler {
     data: RefCell<HashMap<Vec<u8>, ValueType>>,
     replication_info: RedisReplicationInfo,
-    followers: Arc<Vec<Mutex<TcpStream>>>,
+    followers: UnsafeCell<Vec<TcpStream>>,
     config: RefCell<HashMap<Vec<u8>, Vec<u8>>>,
 }
 
@@ -57,7 +55,7 @@ impl RedisHandler {
         RedisHandler {
             data: RefCell::new(HashMap::new()),
             replication_info: RedisReplicationInfo::default(),
-            followers: Arc::new(Vec::new()),
+            followers: UnsafeCell::new(Vec::new()),
             config: RefCell::new(HashMap::new()),
         }
     }
@@ -70,7 +68,7 @@ impl RedisHandler {
         RedisHandler {
             data: RefCell::new(data),
             replication_info,
-            followers: Arc::new(Vec::new()),
+            followers: UnsafeCell::new(Vec::new()),
             config: RefCell::new(config),
         }
     }
@@ -84,7 +82,7 @@ impl RedisHandler {
         Ok(RedisHandler {
             data: RefCell::new(RdbReader::new(&input[..]).read_contents()?),
             replication_info,
-            followers: Arc::new(Vec::new()),
+            followers: UnsafeCell::new(Vec::new()),
             config: RefCell::new(config),
         })
     }
@@ -249,9 +247,10 @@ impl RedisHandler {
 
     async fn replicate_to_followers(&self, request: RedisRequest<'_>) -> Result<(), RedisError> {
         let request_value = request.to_value();
-        for follower in self.followers.iter() {
-            let mut lock = follower.lock().await;
-            request_value.write_async(&mut *lock).await?;
+        // SAFETY: We have guaranteed single-threaded access to this data
+        let followers = unsafe { &mut *self.followers.get() };
+        for follower in followers.iter_mut() {
+            request_value.write_async(follower).await?;
         }
         Ok(())
     }
