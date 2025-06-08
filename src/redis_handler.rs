@@ -8,9 +8,30 @@
 use std::cell::{RefCell, UnsafeCell};
 use std::collections::HashMap;
 use std::io::Read;
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use tokio::io::AsyncReadExt;
+// A wrapper around UnsafeCell that implements Sync for single-threaded use.
+struct SyncUnsafeCell<T>(UnsafeCell<T>);
+
+impl<T> SyncUnsafeCell<T> {
+    fn new(value: T) -> Self {
+        SyncUnsafeCell(UnsafeCell::new(value))
+    }
+
+    /// # Safety
+    /// This can only be called in single-threaded contexts where no other references
+    /// to the contained data exist. The caller must ensure exclusive access.
+    unsafe fn get(&self) -> *mut T {
+        self.0.get()
+    }
+}
+
+// SAFETY: We guarantee single-threaded access in our Redis implementation
+unsafe impl<T> Sync for SyncUnsafeCell<T> where T: Send {}
+unsafe impl<T> Send for SyncUnsafeCell<T> where T: Send {}
+
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
 use base64::Engine;
@@ -25,7 +46,7 @@ use crate::resp_parser::{RespParser, RespValue};
 pub(crate) struct RedisHandler {
     data: RefCell<HashMap<Vec<u8>, ValueType>>,
     replication_info: RedisReplicationInfo,
-    followers: UnsafeCell<Vec<TcpStream>>,
+    followers: UnsafeCell<Vec<Arc<SyncUnsafeCell<TcpStream>>>>,
     config: RefCell<HashMap<Vec<u8>, Vec<u8>>>,
 }
 
@@ -91,14 +112,16 @@ impl RedisHandler {
     //
     // Precondition: this can only be called from a single threaded context, since the data
     // contents are not protected by a lock.
-    pub(crate) async unsafe fn handle_requests(
-        &self,
-        mut stream: TcpStream,
-    ) -> Result<(), RedisError> {
+    pub(crate) async unsafe fn handle_requests(&self, stream: TcpStream) -> Result<(), RedisError> {
         // Use a vec to avoid having a large stack state in the state machine.
         let mut input_buf = vec![0u8; 512];
+        let stream_ref = Arc::new(SyncUnsafeCell::new(stream));
+
         loop {
-            let bytes_read = stream.read(&mut input_buf).await?;
+            let bytes_read = {
+                let stream_ptr = stream_ref.get();
+                (*stream_ptr).read(&mut input_buf).await?
+            };
             if bytes_read == 0 {
                 break;
             }
@@ -107,18 +130,18 @@ impl RedisHandler {
                 Err(error) => {
                     // There's not much we can do if writing the error fails.
                     let _ = RespValue::SimpleError(format!("{:?}", error).as_bytes())
-                        .write_async(&mut stream)
+                        .write_async(&mut *stream_ref.get())
                         .await;
                     continue;
                 }
             };
 
             for request in requests {
-                match self.handle_request(request, &mut stream).await {
+                match self.handle_request(request, Arc::clone(&stream_ref)).await {
                     Ok(()) => (),
                     Err(error) => {
                         let _ = RespValue::SimpleError(format!("{:?}", error).as_bytes())
-                            .write_async(&mut stream)
+                            .write_async(&mut *stream_ref.get())
                             .await;
                     }
                 }
@@ -133,12 +156,23 @@ impl RedisHandler {
     async unsafe fn handle_request<'a>(
         &self,
         request: RedisRequest<'a>,
-        stream: &mut TcpStream,
+        stream: Arc<SyncUnsafeCell<TcpStream>>,
     ) -> Result<(), RedisError> {
+        eprintln!(
+            "Handling request: {:?} from {:?}",
+            request,
+            unsafe { &mut *stream.get() }.peer_addr()
+        );
         match request {
-            RedisRequest::Ping => RespValue::SimpleString(b"PONG").write_async(stream).await?,
+            RedisRequest::Ping => {
+                RespValue::SimpleString(b"PONG")
+                    .write_async(unsafe { &mut *stream.get() })
+                    .await?
+            }
             RedisRequest::Echo(contents) => {
-                RespValue::BulkString(contents).write_async(stream).await?
+                RespValue::BulkString(contents)
+                    .write_async(unsafe { &mut *stream.get() })
+                    .await?
             }
             RedisRequest::Set {
                 key,
@@ -161,17 +195,27 @@ impl RedisHandler {
                 match value_copy {
                     Some(value) if value.is_expired() => {
                         self.data.borrow_mut().remove(key);
-                        RespValue::NullBulkString.write_async(stream).await?
+                        RespValue::NullBulkString
+                            .write_async(unsafe { &mut *stream.get() })
+                            .await?
                     }
                     Some(ValueType { value, .. }) => {
-                        RespValue::BulkString(&value).write_async(stream).await?
+                        RespValue::BulkString(&value)
+                            .write_async(unsafe { &mut *stream.get() })
+                            .await?
                     }
-                    None => RespValue::NullBulkString.write_async(stream).await?,
+                    None => {
+                        RespValue::NullBulkString
+                            .write_async(unsafe { &mut *stream.get() })
+                            .await?
+                    }
                 }
             }
             RedisRequest::ConfigGet(params) => 'config_get: {
                 if params.is_empty() {
-                    RespValue::NullArray.write_async(stream).await?;
+                    RespValue::NullArray
+                        .write_async(unsafe { &mut *stream.get() })
+                        .await?;
                     break 'config_get;
                 }
                 // We need to make a copy of all the responses for the await point.
@@ -189,7 +233,9 @@ impl RedisHandler {
                     .iter()
                     .map(|v| RespValue::BulkString(v))
                     .collect::<Vec<_>>();
-                RespValue::Array(response_array).write_async(stream).await?
+                RespValue::Array(response_array)
+                    .write_async(unsafe { &mut *stream.get() })
+                    .await?
             }
             RedisRequest::Keys(params) => {
                 let keys = match params {
@@ -212,14 +258,32 @@ impl RedisHandler {
                     .iter()
                     .map(|v| RespValue::BulkString(v))
                     .collect::<Vec<_>>();
-                RespValue::Array(response_array).write_async(stream).await?
+                RespValue::Array(response_array)
+                    .write_async(unsafe { &mut *stream.get() })
+                    .await?
             }
-            RedisRequest::Info(None) => self.replication_info.write_async(stream).await?,
+            RedisRequest::Info(None) => {
+                self.replication_info
+                    .write_async(unsafe { &mut *stream.get() })
+                    .await?
+            }
             RedisRequest::Info(Some(info_type)) => match info_type {
-                b"replication" => self.replication_info.write_async(stream).await?,
-                _ => RespValue::NullBulkString.write_async(stream).await?,
+                b"replication" => {
+                    self.replication_info
+                        .write_async(unsafe { &mut *stream.get() })
+                        .await?
+                }
+                _ => {
+                    RespValue::NullBulkString
+                        .write_async(unsafe { &mut *stream.get() })
+                        .await?
+                }
             },
-            RedisRequest::ReplConf(_) => RespValue::SimpleString(b"OK").write_async(stream).await?,
+            RedisRequest::ReplConf(_) => {
+                RespValue::SimpleString(b"OK")
+                    .write_async(unsafe { &mut *stream.get() })
+                    .await?
+            }
             RedisRequest::Psync(Psync { ref replid, offset }) => match (replid, offset) {
                 (replid, -1) if replid == "?" => {
                     RespValue::SimpleString(
@@ -230,9 +294,20 @@ impl RedisHandler {
                         )
                         .as_bytes(),
                     )
-                    .write_async(stream)
+                    .write_async(unsafe { &mut *stream.get() })
                     .await?;
-                    write_empty_file(stream).await?
+
+                    // Save the stream to followers before writing the empty file
+                    // so that any incoming requests before the response are
+                    // properly replicated.
+                    eprintln!(
+                        "Adding follower stream: {:?}",
+                        unsafe { &mut *stream.get() }.peer_addr()
+                    );
+                    let followers = unsafe { &mut *self.followers.get() };
+                    followers.push(Arc::clone(&stream));
+
+                    write_empty_file(unsafe { &mut *stream.get() }).await?
                 }
                 _ => {
                     return Err(RedisError::UnknownRequest(format!(
@@ -249,8 +324,24 @@ impl RedisHandler {
         let request_value = request.to_value();
         // SAFETY: We have guaranteed single-threaded access to this data
         let followers = unsafe { &mut *self.followers.get() };
-        for follower in followers.iter_mut() {
-            request_value.write_async(follower).await?;
+        eprintln!(
+            "Replicating `{:?}` to {} followers",
+            request,
+            followers.len()
+        );
+        for follower in followers.iter() {
+            let mut cursor = std::io::Cursor::new(Vec::new());
+            request_value.write(&mut cursor)?;
+            eprintln!(
+                "Replicating `{:?}` to follower: {:?}",
+                String::from_utf8_lossy(&cursor.into_inner()),
+                unsafe { &mut *follower.get() }.peer_addr()
+            );
+            request_value
+                .write_async(unsafe { &mut *follower.get() })
+                .await?;
+            unsafe { &mut *follower.get() }.flush().await?;
+            eprintln!("Finished replicating to follower: {:?}", unsafe { &mut *follower.get() }.peer_addr());
         }
         Ok(())
     }
