@@ -8,7 +8,7 @@
 use std::cell::{RefCell, UnsafeCell};
 use std::collections::HashMap;
 use std::io::Read;
-use std::sync::Arc;
+use std::sync::{atomic::AtomicU16, atomic::Ordering, Arc};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 // A wrapper around UnsafeCell that implements Sync for single-threaded use.
@@ -59,7 +59,7 @@ pub(crate) struct ValueType {
 #[derive(Debug)]
 pub(crate) struct RedisReplicationInfo {
     pub(crate) role: RedisRole,
-    pub(crate) connected_followers: u16,
+    pub(crate) connected_followers: AtomicU16,
     pub(crate) leader_replid: String,
     pub(crate) leader_repl_offset: u32,
     pub(crate) leader_address: Option<String>,
@@ -132,6 +132,7 @@ impl RedisHandler {
                     let _ = RespValue::SimpleError(format!("{:?}", error).as_bytes())
                         .write_async(&mut *stream_ref.get())
                         .await;
+                    (&mut *stream_ref.get()).flush().await?;
                     continue;
                 }
             };
@@ -143,6 +144,7 @@ impl RedisHandler {
                         let _ = RespValue::SimpleError(format!("{:?}", error).as_bytes())
                             .write_async(&mut *stream_ref.get())
                             .await;
+                        (&mut *stream_ref.get()).flush().await?;
                     }
                 }
             }
@@ -166,12 +168,12 @@ impl RedisHandler {
         match request {
             RedisRequest::Ping => {
                 RespValue::SimpleString(b"PONG")
-                    .write_async(unsafe { &mut *stream.get() })
+                    .write_async(&mut *stream.get())
                     .await?
             }
             RedisRequest::Echo(contents) => {
                 RespValue::BulkString(contents)
-                    .write_async(unsafe { &mut *stream.get() })
+                    .write_async(&mut *stream.get())
                     .await?
             }
             RedisRequest::Set {
@@ -187,6 +189,9 @@ impl RedisHandler {
                     },
                 );
                 self.replicate_to_followers(request).await?;
+                RespValue::SimpleString(b"OK")
+                    .write_async(&mut *stream.get())
+                    .await?;
             }
             RedisRequest::Get(key) => {
                 // We have to make a copy of the value, because while we are paused on the await, another
@@ -196,26 +201,24 @@ impl RedisHandler {
                     Some(value) if value.is_expired() => {
                         self.data.borrow_mut().remove(key);
                         RespValue::NullBulkString
-                            .write_async(unsafe { &mut *stream.get() })
+                            .write_async(&mut *stream.get())
                             .await?
                     }
                     Some(ValueType { value, .. }) => {
                         RespValue::BulkString(&value)
-                            .write_async(unsafe { &mut *stream.get() })
+                            .write_async(&mut *stream.get())
                             .await?
                     }
                     None => {
                         RespValue::NullBulkString
-                            .write_async(unsafe { &mut *stream.get() })
+                            .write_async(&mut *stream.get())
                             .await?
                     }
                 }
             }
             RedisRequest::ConfigGet(params) => 'config_get: {
                 if params.is_empty() {
-                    RespValue::NullArray
-                        .write_async(unsafe { &mut *stream.get() })
-                        .await?;
+                    RespValue::NullArray.write_async(&mut *stream.get()).await?;
                     break 'config_get;
                 }
                 // We need to make a copy of all the responses for the await point.
@@ -234,7 +237,7 @@ impl RedisHandler {
                     .map(|v| RespValue::BulkString(v))
                     .collect::<Vec<_>>();
                 RespValue::Array(response_array)
-                    .write_async(unsafe { &mut *stream.get() })
+                    .write_async(&mut *stream.get())
                     .await?
             }
             RedisRequest::Keys(params) => {
@@ -259,29 +262,29 @@ impl RedisHandler {
                     .map(|v| RespValue::BulkString(v))
                     .collect::<Vec<_>>();
                 RespValue::Array(response_array)
-                    .write_async(unsafe { &mut *stream.get() })
+                    .write_async(&mut *stream.get())
                     .await?
             }
             RedisRequest::Info(None) => {
                 self.replication_info
-                    .write_async(unsafe { &mut *stream.get() })
+                    .write_async(&mut *stream.get())
                     .await?
             }
             RedisRequest::Info(Some(info_type)) => match info_type {
                 b"replication" => {
                     self.replication_info
-                        .write_async(unsafe { &mut *stream.get() })
+                        .write_async(&mut *stream.get())
                         .await?
                 }
                 _ => {
                     RespValue::NullBulkString
-                        .write_async(unsafe { &mut *stream.get() })
+                        .write_async(&mut *stream.get())
                         .await?
                 }
             },
             RedisRequest::ReplConf(_) => {
                 RespValue::SimpleString(b"OK")
-                    .write_async(unsafe { &mut *stream.get() })
+                    .write_async(&mut *stream.get())
                     .await?
             }
             RedisRequest::Psync(Psync { ref replid, offset }) => match (replid, offset) {
@@ -294,20 +297,19 @@ impl RedisHandler {
                         )
                         .as_bytes(),
                     )
-                    .write_async(unsafe { &mut *stream.get() })
+                    .write_async(&mut *stream.get())
                     .await?;
 
                     // Save the stream to followers before writing the empty file
                     // so that any incoming requests before the response are
                     // properly replicated.
-                    eprintln!(
-                        "Adding follower stream: {:?}",
-                        unsafe { &mut *stream.get() }.peer_addr()
-                    );
-                    let followers = unsafe { &mut *self.followers.get() };
+                    let followers = &mut *self.followers.get();
                     followers.push(Arc::clone(&stream));
+                    self.replication_info
+                        .connected_followers
+                        .fetch_add(1, Ordering::Relaxed);
 
-                    write_empty_file(unsafe { &mut *stream.get() }).await?
+                    write_empty_file(&mut *stream.get()).await?;
                 }
                 _ => {
                     return Err(RedisError::UnknownRequest(format!(
@@ -320,28 +322,19 @@ impl RedisHandler {
         Ok(())
     }
 
-    async fn replicate_to_followers(&self, request: RedisRequest<'_>) -> Result<(), RedisError> {
+    // Safety: this function can only be called from a single-threaded context,
+    async unsafe fn replicate_to_followers(
+        &self,
+        request: RedisRequest<'_>,
+    ) -> Result<(), RedisError> {
         let request_value = request.to_value();
         // SAFETY: We have guaranteed single-threaded access to this data
         let followers = unsafe { &mut *self.followers.get() };
-        eprintln!(
-            "Replicating `{:?}` to {} followers",
-            request,
-            followers.len()
-        );
         for follower in followers.iter() {
             let mut cursor = std::io::Cursor::new(Vec::new());
             request_value.write(&mut cursor)?;
-            eprintln!(
-                "Replicating `{:?}` to follower: {:?}",
-                String::from_utf8_lossy(&cursor.into_inner()),
-                unsafe { &mut *follower.get() }.peer_addr()
-            );
-            request_value
-                .write_async(unsafe { &mut *follower.get() })
-                .await?;
-            unsafe { &mut *follower.get() }.flush().await?;
-            eprintln!("Finished replicating to follower: {:?}", unsafe { &mut *follower.get() }.peer_addr());
+            request_value.write_async(&mut *follower.get()).await?;
+            (&mut *follower.get()).flush().await?;
         }
         Ok(())
     }
@@ -458,7 +451,10 @@ impl RedisReplicationInfo {
                 contents.push_str("master_replid:");
                 contents.push_str(&self.leader_replid);
                 contents.push_str(&format!("\nmaster_repl_offset:{}", self.leader_repl_offset));
-                contents.push_str(&format!("\nconnected_slaves:{}", self.connected_followers));
+                contents.push_str(&format!(
+                    "\nconnected_slaves:{}",
+                    self.connected_followers.load(Ordering::Relaxed)
+                ));
             }
             RedisRole::Follower => contents.push_str("role:slave"),
         };
@@ -473,7 +469,7 @@ impl Default for RedisReplicationInfo {
     fn default() -> Self {
         RedisReplicationInfo {
             role: RedisRole::Leader,
-            connected_followers: 0,
+            connected_followers: AtomicU16::new(0),
             leader_replid: String::default(),
             leader_repl_offset: 0,
             leader_address: None,
