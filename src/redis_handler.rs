@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::io::Read;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt, BufWriter};
 use tokio::net::TcpStream;
 
 use base64::Engine;
@@ -93,12 +93,15 @@ impl RedisHandler {
     // contents are not protected by a lock.
     pub(crate) async unsafe fn handle_requests(
         &self,
-        mut stream: TcpStream,
+        stream: TcpStream,
     ) -> Result<(), RedisError> {
         // Use a vec to avoid having a large stack state in the state machine.
         let mut input_buf = vec![0u8; 512];
+        let (mut reader, writer) = stream.into_split();
+        let mut buffered_writer = BufWriter::new(writer);
+        
         loop {
-            let bytes_read = stream.read(&mut input_buf).await?;
+            let bytes_read = reader.read(&mut input_buf).await?;
             if bytes_read == 0 {
                 break;
             }
@@ -107,19 +110,23 @@ impl RedisHandler {
                 Err(error) => {
                     // There's not much we can do if writing the error fails.
                     let _ = RespValue::SimpleError(format!("{:?}", error).as_bytes())
-                        .write_async(&mut stream)
+                        .write_async(&mut buffered_writer)
                         .await;
+                    let _ = buffered_writer.flush().await;
                     continue;
                 }
             };
 
             for request in requests {
-                match self.handle_request(request, &mut stream).await {
-                    Ok(()) => (),
+                match self.handle_request(request, &mut buffered_writer).await {
+                    Ok(()) => {
+                        let _ = buffered_writer.flush().await;
+                    }
                     Err(error) => {
                         let _ = RespValue::SimpleError(format!("{:?}", error).as_bytes())
-                            .write_async(&mut stream)
+                            .write_async(&mut buffered_writer)
                             .await;
+                        let _ = buffered_writer.flush().await;
                     }
                 }
             }
@@ -130,11 +137,14 @@ impl RedisHandler {
     // Handles a single request, writing the result to the provided stream.
     //
     // Unsafe because it requires that the async pool executing it is single threaded.
-    async unsafe fn handle_request<'a>(
+    async unsafe fn handle_request<'a, W>(
         &self,
         request: RedisRequest<'a>,
-        stream: &mut TcpStream,
-    ) -> Result<(), RedisError> {
+        stream: &mut W,
+    ) -> Result<(), RedisError>
+    where
+        W: AsyncWriteExt + Unpin,
+    {
         match request {
             RedisRequest::Ping => RespValue::SimpleString(b"PONG").write_async(stream).await?,
             RedisRequest::Echo(contents) => {
