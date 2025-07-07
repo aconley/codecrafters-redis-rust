@@ -5,6 +5,7 @@ use crate::errors::RespError;
 
 const SEPARATOR: &[u8] = b"\r\n";
 
+// The raw values that can be sent in a RESP stream.
 #[derive(PartialEq, Clone, Debug)]
 pub(crate) enum RespValue<'a> {
     SimpleString(&'a [u8]),
@@ -19,6 +20,7 @@ pub(crate) enum RespValue<'a> {
 }
 
 impl<'a> RespValue<'a> {
+    /// Synchronously writes the value to the provided writer.
     pub(crate) fn write<W: std::io::Write>(&self, writer: &mut W) -> Result<(), RespError> {
         match self {
             RespValue::SimpleString(contents) => {
@@ -64,6 +66,7 @@ impl<'a> RespValue<'a> {
         Ok(())
     }
 
+    /// Asynchronously writes the value to the provided writer.
     pub(crate) async fn write_async<W>(&self, writer: &mut W) -> Result<(), RespError>
     where
         W: tokio::io::AsyncWriteExt + Unpin,
@@ -118,6 +121,7 @@ impl<'a> RespValue<'a> {
         Ok(())
     }
 
+    /// Convenience method to get a string representation of the type of the value.
     pub(crate) fn type_string(&self) -> String {
         match self {
             RespValue::SimpleString(_) => "SimpleString".to_string(),

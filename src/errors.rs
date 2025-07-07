@@ -10,6 +10,9 @@ pub(crate) enum RedisError {
     UnexpectedArgumentType(String), // The request had an argument of the wrong type.
     RdbParserError(RdbFileError),   // An error parsing an RDB file.
     ReplicationError(String),       // An error during replication.
+    InvalidExpiration(String),      // The expiration time is invalid.
+    InvalidPort(i32),              // The port number is invalid.
+    InvalidDirectory(String),       // The directory path is invalid.
 }
 
 /// Errors encountered while parsing RESP values.
@@ -49,6 +52,9 @@ impl std::fmt::Display for RedisError {
             }
             RedisError::RdbParserError(inner) => inner.fmt(f),
             RedisError::ReplicationError(inner) => write!(f, "Redis replication error: {inner}"),
+            RedisError::InvalidExpiration(inner) => write!(f, "Invalid expiration: {inner}"),
+            RedisError::InvalidPort(port) => write!(f, "Invalid port: {port}"),
+            RedisError::InvalidDirectory(dir) => write!(f, "Invalid directory: {dir}"),
         }
     }
 }

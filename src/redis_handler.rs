@@ -173,11 +173,13 @@ impl RedisHandler {
     ) -> Result<(), RedisError> {
         match request {
             RedisRequest::Ping => {
+                // Simply respond with a PONG.
                 RespValue::SimpleString(b"PONG")
                     .write_async(&mut *stream.get())
                     .await?
             }
             RedisRequest::Echo(contents) => {
+                // Echo the contents back to the client.
                 RespValue::BulkString(contents)
                     .write_async(&mut *stream.get())
                     .await?
@@ -187,6 +189,7 @@ impl RedisHandler {
                 value,
                 expiration,
             } => {
+                // Set the value in the data store.
                 self.data.borrow_mut().insert(
                     key.to_vec(),
                     ValueType {
@@ -200,6 +203,7 @@ impl RedisHandler {
                     .await?;
             }
             RedisRequest::Get(key) => {
+                // Get the value from the data store and reply with it.
                 // We have to make a copy of the value, because while we are paused on the await, another
                 // future may overwrite the value for this key and invalidate the reference.
                 let value_copy = self.data.borrow().get(key).map(|v| v.to_owned());
@@ -223,6 +227,7 @@ impl RedisHandler {
                 }
             }
             RedisRequest::ConfigGet(params) => 'config_get: {
+                // Get information from the config.
                 if params.is_empty() {
                     RespValue::NullArray.write_async(&mut *stream.get()).await?;
                     break 'config_get;
@@ -249,7 +254,8 @@ impl RedisHandler {
             RedisRequest::Keys(params) => {
                 let keys = match params {
                     b"*" => {
-                        // All keys.
+                        // All keys.  We need to copy them because we are sending across
+                        // an await point.
                         self.data
                             .borrow()
                             .keys()
@@ -272,11 +278,13 @@ impl RedisHandler {
                     .await?
             }
             RedisRequest::Info(None) => {
+                // Get replication information.
                 self.replication_info
                     .write_async(&mut *stream.get())
                     .await?
             }
             RedisRequest::Info(Some(info_type)) => match info_type {
+                // Get a specific type of information.
                 b"replication" => {
                     self.replication_info
                         .write_async(&mut *stream.get())
@@ -294,6 +302,9 @@ impl RedisHandler {
                     .await?
             }
             RedisRequest::Psync(Psync { ref replid, offset }) => match (replid, offset) {
+                // One of the steps in setting up a follower.  In a proper implementation, sends
+                // all the contents from this leader, but in this toy implementation just returns
+                // empty contents.
                 (replid, -1) if replid == "?" => {
                     RespValue::SimpleString(
                         format!(
@@ -327,6 +338,7 @@ impl RedisHandler {
         Ok(())
     }
 
+    // Replicate the provided request to all the followers.
     // Safety: this function can only be called from a single-threaded context,
     async unsafe fn replicate_to_followers(
         &self,
@@ -336,8 +348,6 @@ impl RedisHandler {
         // SAFETY: We have guaranteed single-threaded access to this data
         let followers = unsafe { &mut *self.followers.get() };
         for follower in followers.iter() {
-            let mut cursor = std::io::Cursor::new(Vec::new());
-            request_value.write(&mut cursor)?;
             request_value.write_async(&mut *follower.get()).await?;
             (&mut *follower.get()).flush().await?;
         }
@@ -425,8 +435,10 @@ impl ValueType {
 unsafe impl Send for RedisHandler {}
 unsafe impl Sync for RedisHandler {}
 
+// The base64 encoded contents of an empty RDB file.
 const EMPTY_FILE_BASE64 : &str = "UkVESVMwMDEx+glyZWRpcy12ZXIFNy4yLjD6CnJlZGlzLWJpdHPAQPoFY3RpbWXCbQi8ZfoIdXNlZC1tZW3CsMQQAPoIYW9mLWJhc2XAAP/wbjv+wP9aog==";
 
+// Writes the empty RDB file to the provided writer.
 pub(crate) async fn write_empty_file<W>(writer: &mut W) -> std::io::Result<()>
 where
     W: tokio::io::AsyncWriteExt + Unpin,
@@ -445,6 +457,7 @@ where
 }
 
 impl RedisReplicationInfo {
+    // Writes the replication information to the provided writer.
     async fn write_async<W>(&self, writer: &mut W) -> Result<(), RedisError>
     where
         W: tokio::io::AsyncWriteExt + Unpin,

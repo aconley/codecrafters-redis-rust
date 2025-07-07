@@ -70,7 +70,7 @@ impl RedisRequest<'_> {
                 array.push(RespValue::BulkString(key));
                 array.push(RespValue::BulkString(value));
                 if let Some(expiration) = expiration {
-                    array.push(RespValue::BulkString(b"PXAX"));
+                    array.push(RespValue::BulkString(b"PXAT"));
                     array.push(RespValue::OwningBulkString(
                         expiration
                             .duration_since(SystemTime::UNIX_EPOCH)
@@ -166,6 +166,7 @@ fn parse_command(value: RespValue) -> Result<RedisRequest, RedisError> {
     }
 }
 
+// Parses a RespValue that represents a PING command.
 fn parse_ping<'a>(values: &[RespValue<'a>]) -> Result<RedisRequest<'a>, RedisError> {
     if !values.is_empty() {
         Err(RedisError::UnexpectedNumberOfArgs(format!(
@@ -177,6 +178,7 @@ fn parse_ping<'a>(values: &[RespValue<'a>]) -> Result<RedisRequest<'a>, RedisErr
     }
 }
 
+// Parses a RespValue that represents an ECHO command.
 fn parse_echo<'a>(values: &[RespValue<'a>]) -> Result<RedisRequest<'a>, RedisError> {
     if values.len() != 1 {
         Err(RedisError::UnexpectedNumberOfArgs(format!(
@@ -194,6 +196,8 @@ fn parse_echo<'a>(values: &[RespValue<'a>]) -> Result<RedisRequest<'a>, RedisErr
     }
 }
 
+/// Parses a RespValue that represents a SET command, which may have an optional expiration.
+/// This sets the value for a single key in the data store.
 fn parse_set<'a>(values: &[RespValue<'a>]) -> Result<RedisRequest<'a>, RedisError> {
     if values.len() != 2 && values.len() != 4 {
         return Err(RedisError::UnexpectedNumberOfArgs(format!(
@@ -237,6 +241,8 @@ fn parse_set<'a>(values: &[RespValue<'a>]) -> Result<RedisRequest<'a>, RedisErro
     }
 }
 
+// Parses a RespValue that represents a GET command.  This fetches
+// the value of a single key from the data store.
 fn parse_get<'a>(values: &[RespValue<'a>]) -> Result<RedisRequest<'a>, RedisError> {
     if values.len() != 1 {
         Err(RedisError::UnexpectedNumberOfArgs(format!(
@@ -254,6 +260,7 @@ fn parse_get<'a>(values: &[RespValue<'a>]) -> Result<RedisRequest<'a>, RedisErro
     }
 }
 
+// Parses a RespValue that represents a CONFIG command.
 fn parse_config<'a>(values: &[RespValue<'a>]) -> Result<RedisRequest<'a>, RedisError> {
     if values.len() < 2 {
         return Err(RedisError::UnexpectedNumberOfArgs(
@@ -275,6 +282,7 @@ fn parse_config<'a>(values: &[RespValue<'a>]) -> Result<RedisRequest<'a>, RedisE
     }
 }
 
+// Parses a RespValue that represents a CONFIG GET command.
 fn parse_command_get<'a>(values: &[RespValue<'a>]) -> Result<RedisRequest<'a>, RedisError> {
     let mut params = Vec::<&'a [u8]>::new();
     for (idx, value) in values.iter().enumerate() {
@@ -291,6 +299,8 @@ fn parse_command_get<'a>(values: &[RespValue<'a>]) -> Result<RedisRequest<'a>, R
     Ok(RedisRequest::ConfigGet(params))
 }
 
+// Parses a RespValue that represents a KEYS command, which fetches
+// either all keys or a subset of keys matching a pattern.
 fn parse_keys<'a>(values: &[RespValue<'a>]) -> Result<RedisRequest<'a>, RedisError> {
     if values.len() != 1 {
         Err(RedisError::UnexpectedNumberOfArgs(format!(
@@ -308,6 +318,8 @@ fn parse_keys<'a>(values: &[RespValue<'a>]) -> Result<RedisRequest<'a>, RedisErr
     }
 }
 
+// Parses a RespValue that represents an INFO command, which fetches
+// information about the server.
 fn parse_info<'a>(values: &[RespValue<'a>]) -> Result<RedisRequest<'a>, RedisError> {
     if values.is_empty() {
         Ok(RedisRequest::Info(None))
@@ -327,6 +339,8 @@ fn parse_info<'a>(values: &[RespValue<'a>]) -> Result<RedisRequest<'a>, RedisErr
     }
 }
 
+// Parses a RespValue that represents a REPLCONF command, which
+// configures the replication settings of the server.
 fn parse_replconf<'a>(values: &[RespValue<'a>]) -> Result<RedisRequest<'a>, RedisError> {
     if values.len() != 2 {
         Err(RedisError::UnexpectedNumberOfArgs(format!(
@@ -349,6 +363,8 @@ fn parse_replconf<'a>(values: &[RespValue<'a>]) -> Result<RedisRequest<'a>, Redi
     }
 }
 
+// Parses a RespValue that represents a PSYNC command, which is used
+// to sync a follower with a leader.
 fn parse_psync<'a>(values: &[RespValue<'a>]) -> Result<RedisRequest<'a>, RedisError> {
     if values.len() != 2 {
         Err(RedisError::UnexpectedNumberOfArgs(format!(
@@ -362,29 +378,49 @@ fn parse_psync<'a>(values: &[RespValue<'a>]) -> Result<RedisRequest<'a>, RedisEr
     }
 }
 
+// Converts a byte slice to uppercase.
 fn uppercase(value: &[u8]) -> Vec<u8> {
     value.iter().map(|u| u.to_ascii_uppercase()).collect()
 }
 
+// Validates that an expiration time is reasonable.
+fn validate_expiration(expiration: SystemTime) -> Result<(), RedisError> {
+    if expiration <= SystemTime::now() {
+        return Err(RedisError::InvalidExpiration("Expiration cannot be in the past".to_string()));
+    }
+    
+    // Prevent extremely far future dates (10 years)
+    let max_future = SystemTime::now() + Duration::from_secs(10 * 365 * 24 * 60 * 60);
+    if expiration > max_future {
+        return Err(RedisError::InvalidExpiration("Expiration too far in future".to_string()));
+    }
+    Ok(())
+}
+
+// Parses an expiration type and value into a SystemTime.
 fn parse_expiration(
     expiration_type: &[u8],
     expiration_value: &[u8],
 ) -> Result<SystemTime, RedisError> {
-    match &uppercase(expiration_type)[..] {
+    let expiration = match &uppercase(expiration_type)[..] {
         b"PX" => {
-            Ok(SystemTime::now() + Duration::from_millis(parse_integer(expiration_value)? as u64))
+            SystemTime::now() + Duration::from_millis(parse_integer(expiration_value)? as u64)
         }
         b"PXAT" => {
-            Ok(SystemTime::UNIX_EPOCH
-                + Duration::from_millis(parse_integer(expiration_value)? as u64))
+            SystemTime::UNIX_EPOCH
+                + Duration::from_millis(parse_integer(expiration_value)? as u64)
         }
-        _ => Err(RedisError::UnknownRequest(format!(
+        _ => return Err(RedisError::UnknownRequest(format!(
             "For SET, unexpected expiry spec {}",
             String::from_utf8_lossy(expiration_type)
         ))),
-    }
+    };
+    
+    validate_expiration(expiration)?;
+    Ok(expiration)
 }
 
+// Parse a bulk string into a value of type T.
 fn parse_from_bulk_string<T>(input: &RespValue) -> Result<T, RedisError>
 where
     T: std::str::FromStr,

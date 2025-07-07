@@ -49,6 +49,7 @@ impl RedisArgs {
 #[tokio::main(worker_threads = 1)]
 async fn main() {
     let args = RedisArgs::parse();
+    validate_args(&args).expect("Invalid arguments");
     let replication_info =
         replication_info_from_args(&args).expect("Unable to parse replication_info");
     let handler = get_handler(&args, replication_info).expect("Unable to get handler");
@@ -111,6 +112,44 @@ fn get_handler(
 
     handler.configure_replication()?;
     Ok(handler)
+}
+
+/// Validates the command line arguments.
+fn validate_args(args: &RedisArgs) -> Result<(), RedisError> {
+    if args.port < 1 || args.port > 65535 {
+        return Err(RedisError::InvalidPort(args.port));
+    }
+    
+    if let Some(dir) = &args.dir {
+        if !std::path::Path::new(dir).exists() {
+            return Err(RedisError::InvalidDirectory(dir.clone()));
+        }
+    }
+    
+    if let Some(replicaof) = &args.replicaof {
+        validate_replicaof_format(replicaof)?;
+    }
+    
+    Ok(())
+}
+
+/// Validates the replicaof format (should be "host port").
+fn validate_replicaof_format(replicaof: &str) -> Result<(), RedisError> {
+    let parts: Vec<&str> = replicaof.split_whitespace().collect();
+    if parts.len() != 2 {
+        return Err(RedisError::UnexpectedNumberOfArgs(format!(
+            "Expected two components for replicaof, found {} (from {})",
+            parts.len(),
+            replicaof
+        )));
+    }
+    
+    // Validate that the second part is a valid port number
+    if let Err(_) = parts[1].parse::<u16>() {
+        return Err(RedisError::InvalidPort(parts[1].parse::<i32>().unwrap_or(-1)));
+    }
+    
+    Ok(())
 }
 
 /// Creates new replication info from the command line arguments in args.
