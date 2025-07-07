@@ -5,6 +5,7 @@ use std::io::Read;
 use crate::errors::RdbFileError;
 use crate::redis_handler::ValueType;
 
+/// A reader for RDB files packaged together with a read buffer.
 pub(crate) struct RdbReader<R> {
     reader: R,
     buffer: [u8; 1],
@@ -19,6 +20,7 @@ impl<R> RdbReader<R> {
     }
 }
 
+/// A single value from an RDB file.
 #[derive(Debug, PartialEq)]
 enum RdbValue {
     Header { version: [u8; 4] },
@@ -31,17 +33,19 @@ impl<R> RdbReader<R>
 where
     R: Read,
 {
+    // Read the contents of an RDB file.
     pub(crate) fn read_contents(&mut self) -> Result<HashMap<Vec<u8>, ValueType>, RdbFileError> {
         self.read_header()?;
         let mut db = std::collections::HashMap::new();
         loop {
             match self.read_next_value()? {
                 RdbValue::Header { .. } => {
+                    // We already read the header above, so this is an error.
                     return Err(RdbFileError::InvalidFile(
                         "Multiple file headers".to_string(),
-                    ))
+                    ));
                 }
-                RdbValue::MetadataSection { .. } => (),
+                RdbValue::MetadataSection { .. } => (), // Ignore.
                 RdbValue::Database(contents) => db = contents,
                 RdbValue::EndOfFile { .. } => return Ok(db),
             }
@@ -71,6 +75,7 @@ where
         }
     }
 
+    /// Reads a metadata entry from the input.
     fn read_metadata_entry(&mut self) -> Result<RdbValue, RdbFileError> {
         Ok(RdbValue::MetadataSection {
             key: self.read_string()?,
@@ -78,6 +83,7 @@ where
         })
     }
 
+    /// Reads the database section of an RDB file.
     fn read_database(&mut self) -> Result<RdbValue, RdbFileError> {
         let database_idx = self.read_size()?;
         if database_idx != 0 {
@@ -152,12 +158,14 @@ where
         Ok(RdbValue::Database(database_contents))
     }
 
+    /// Reads the end of file section of an RDB file.
     fn read_end_of_file(&mut self) -> Result<RdbValue, RdbFileError> {
         let mut checksum = [0u8; 8];
         self.reader.read_exact(&mut checksum)?;
         Ok(RdbValue::EndOfFile { checksum })
     }
 
+    // Reads a size from the input.
     fn read_size(&mut self) -> Result<usize, RdbFileError> {
         let b = self.read_next_byte()?;
         match (b & 0xc0) >> 6 {
@@ -175,6 +183,7 @@ where
         }
     }
 
+    // Reads a string from the input Rdb file.
     fn read_string(&mut self) -> Result<Vec<u8>, RdbFileError> {
         // Supports additional size encodings that read_size does not.
         let b = self.read_next_byte()?;
@@ -208,7 +217,7 @@ where
                     0xc0 => {
                         // 8 bit value.
                         let v = self.read_next_byte()?;
-                        Ok(format!("{}", v).into_bytes())
+                        Ok(format!("{v}").into_bytes())
                     }
                     0xc1 => {
                         // 16 bit value.

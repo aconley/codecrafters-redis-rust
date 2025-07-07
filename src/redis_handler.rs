@@ -5,41 +5,18 @@
 // idea, but follows the actual Redis model, which uses a single thread
 // to avoid locking overheads.
 
+use crate::errors::RedisError;
+use crate::rdb_parser::RdbReader;
+use crate::resp_command::{parse_commands, Psync, RedisRequest};
+use crate::resp_parser::{RespParser, RespValue};
+use base64::Engine;
 use std::cell::{RefCell, UnsafeCell};
 use std::collections::HashMap;
 use std::io::Read;
 use std::sync::{atomic::AtomicU16, atomic::Ordering, Arc};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-
-// A wrapper around UnsafeCell that implements Sync for single-threaded use.
-struct SyncUnsafeCell<T>(UnsafeCell<T>);
-
-impl<T> SyncUnsafeCell<T> {
-    fn new(value: T) -> Self {
-        SyncUnsafeCell(UnsafeCell::new(value))
-    }
-
-    /// # Safety
-    /// This can only be called in single-threaded contexts where no other references
-    /// to the contained data exist. The caller must ensure exclusive access.
-    unsafe fn get(&self) -> *mut T {
-        self.0.get()
-    }
-}
-
-// SAFETY: We guarantee single-threaded access in our Redis implementation
-unsafe impl<T> Sync for SyncUnsafeCell<T> where T: Send {}
-unsafe impl<T> Send for SyncUnsafeCell<T> where T: Send {}
-
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-
-use base64::Engine;
-
-use crate::errors::RedisError;
-use crate::rdb_parser::RdbReader;
-use crate::resp_command::{parse_commands, Psync, RedisRequest};
-use crate::resp_parser::{RespParser, RespValue};
 
 // The data store for Redis.
 #[derive(Debug)]
@@ -50,6 +27,7 @@ pub(crate) struct RedisHandler {
     config: RefCell<HashMap<Vec<u8>, Vec<u8>>>,
 }
 
+// The type of a single value in the data store, with an optional expiration.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ValueType {
     value: Vec<u8>,
@@ -71,7 +49,27 @@ pub(crate) enum RedisRole {
     Follower,
 }
 
+// A wrapper around UnsafeCell that implements Sync for single-threaded use.
+struct SyncUnsafeCell<T>(UnsafeCell<T>);
+
+impl<T> SyncUnsafeCell<T> {
+    fn new(value: T) -> Self {
+        SyncUnsafeCell(UnsafeCell::new(value))
+    }
+
+    /// SAFETY: This can only be called in single-threaded contexts where no other references
+    /// to the contained data exist. The caller must ensure exclusive access.
+    unsafe fn get(&self) -> *mut T {
+        self.0.get()
+    }
+}
+
+// SAFETY: We guarantee single-threaded access in our Redis implementation
+unsafe impl<T> Sync for SyncUnsafeCell<T> where T: Send {}
+unsafe impl<T> Send for SyncUnsafeCell<T> where T: Send {}
+
 impl RedisHandler {
+    /// Creates a new, empty RedisHandler.
     pub(crate) fn new() -> Self {
         RedisHandler {
             data: RefCell::new(HashMap::new()),
@@ -81,6 +79,7 @@ impl RedisHandler {
         }
     }
 
+    /// Creates a new RedisHandler with the provided contents.
     pub(crate) fn new_with_contents(
         config: HashMap<Vec<u8>, Vec<u8>>,
         replication_info: RedisReplicationInfo,
@@ -94,6 +93,7 @@ impl RedisHandler {
         }
     }
 
+    /// Creates a new RedisHandler based on the contents of an RDB file.
     pub(crate) fn new_from_file(
         path: std::path::PathBuf,
         replication_info: RedisReplicationInfo,
@@ -117,19 +117,27 @@ impl RedisHandler {
         let mut input_buf = vec![0u8; 512];
         let stream_ref = Arc::new(SyncUnsafeCell::new(stream));
 
+        // Keep reading from the stream until it is done.
+        // This doesn't properly handle requests that span multiple reads, a
+        // real implementation would clearly have to.  But that's pretty
+        // tedious, so just ignore it for this toy implementation.
         loop {
             let bytes_read = {
                 let stream_ptr = stream_ref.get();
                 (*stream_ptr).read(&mut input_buf).await?
             };
             if bytes_read == 0 {
+                // Stream is done.
                 break;
             }
+
+            // Parse the commands from the input buffer.
             let requests = match parse_commands(&input_buf[0..bytes_read]) {
                 Ok(requests) => requests,
                 Err(error) => {
-                    // There's not much we can do if writing the error fails.
-                    let _ = RespValue::SimpleError(format!("{:?}", error).as_bytes())
+                    // There's not much we can do if writing the error fails, so just ignore
+                    // errors.
+                    let _ = RespValue::SimpleError(format!("{error:?}").as_bytes())
                         .write_async(&mut *stream_ref.get())
                         .await;
                     (&mut *stream_ref.get()).flush().await?;
@@ -137,11 +145,14 @@ impl RedisHandler {
                 }
             };
 
+            // Process each request in the provided order.
             for request in requests {
                 match self.handle_request(request, Arc::clone(&stream_ref)).await {
                     Ok(()) => (),
                     Err(error) => {
-                        let _ = RespValue::SimpleError(format!("{:?}", error).as_bytes())
+                        // Again, ignore errors that occur while writing the error; there isn't
+                        // much we can do in such cases.
+                        let _ = RespValue::SimpleError(format!("{error:?}").as_bytes())
                             .write_async(&mut *stream_ref.get())
                             .await;
                         (&mut *stream_ref.get()).flush().await?;
@@ -160,11 +171,6 @@ impl RedisHandler {
         request: RedisRequest<'a>,
         stream: Arc<SyncUnsafeCell<TcpStream>>,
     ) -> Result<(), RedisError> {
-        eprintln!(
-            "Handling request: {:?} from {:?}",
-            request,
-            unsafe { &mut *stream.get() }.peer_addr()
-        );
         match request {
             RedisRequest::Ping => {
                 RespValue::SimpleString(b"PONG")
@@ -313,8 +319,7 @@ impl RedisHandler {
                 }
                 _ => {
                     return Err(RedisError::UnknownRequest(format!(
-                        "Unexpected psync replid {} offset {}",
-                        replid, offset
+                        "Unexpected psync replid {replid} offset {offset}"
                     )))
                 }
             },
@@ -484,7 +489,7 @@ struct RequestResponsePairProcessor<'a> {
 }
 
 impl RequestResponsePairProcessor<'_> {
-    fn new(addr: &str) -> Result<RequestResponsePairProcessor, RedisError> {
+    fn new(addr: &str) -> Result<RequestResponsePairProcessor<'_>, RedisError> {
         Ok(RequestResponsePairProcessor {
             stream: std::net::TcpStream::connect(addr)?,
             buffer: vec![0u8; 128],
@@ -516,8 +521,7 @@ impl RequestResponsePairProcessor<'_> {
         if bytes_read == 0 {
             // Connection closed.
             return Err(RedisError::ReplicationError(format!(
-                "Replication connection closed unexpectedly after {:?}",
-                request
+                "Replication connection closed unexpectedly after {request:?}",
             )));
         }
         let values = self.parser.get_values(&self.buffer[..bytes_read])?;

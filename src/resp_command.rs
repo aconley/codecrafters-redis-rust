@@ -4,6 +4,12 @@ use crate::errors::{RedisError, RespError};
 use crate::resp_parser::{parse_integer, RespParser, RespValue};
 
 /// Redis commands parsed from RESP.
+///
+/// RespValue are the on-the-wire values in the RESP protocol, a
+/// RedisRequest is a higher level representation of a single
+/// Redis command.  Each should correspond to an action that
+/// the server can take, such as setting or fetching a value
+/// from the data store.
 #[derive(PartialEq, Clone, Debug)]
 pub(crate) enum RedisRequest<'a> {
     Ping,
@@ -21,19 +27,22 @@ pub(crate) enum RedisRequest<'a> {
     Psync(Psync),
 }
 
+// A REPLCONF command.
 #[derive(PartialEq, Clone, Debug)]
 pub(crate) enum ReplConf {
     Port(u16),
     Capa(String),
 }
 
+// A PSYNC command.
 #[derive(PartialEq, Clone, Debug)]
 pub(crate) struct Psync {
     pub replid: String,
     pub offset: i32,
 }
 
-pub(crate) fn parse_commands(input: &[u8]) -> Result<Vec<RedisRequest>, RedisError> {
+/// Parses one or more Redis requests from the provided input.
+pub(crate) fn parse_commands(input: &[u8]) -> Result<Vec<RedisRequest<'_>>, RedisError> {
     if input.is_empty() {
         return Ok(Vec::new());
     }
@@ -46,7 +55,8 @@ pub(crate) fn parse_commands(input: &[u8]) -> Result<Vec<RedisRequest>, RedisErr
 }
 
 impl RedisRequest<'_> {
-    pub(crate) fn to_value(&self) -> RespValue {
+    // Convert a RedisRequest to a RESP value.
+    pub(crate) fn to_value(&self) -> RespValue<'_> {
         match self {
             RedisRequest::Ping => RespValue::Array(vec![RespValue::BulkString(b"PING")]),
             RedisRequest::Echo(contents) => RespValue::Array(vec![RespValue::BulkString(contents)]),
@@ -66,7 +76,7 @@ impl RedisRequest<'_> {
                             .duration_since(SystemTime::UNIX_EPOCH)
                             .expect("Couldn't compute duration since unix epoch")
                             .as_millis()
-                            .to_string()
+                            .to_string(),
                     ));
                 }
                 RespValue::Array(array)
@@ -100,7 +110,7 @@ impl RedisRequest<'_> {
                 match repl_conf {
                     ReplConf::Port(port) => {
                         array.push(RespValue::BulkString(b"listening-port"));
-                        array.push(RespValue::OwningBulkString(format!("{}", port)));
+                        array.push(RespValue::OwningBulkString(format!("{port}")));
                     }
                     ReplConf::Capa(capa) => {
                         array.push(RespValue::BulkString(b"capa"));
@@ -120,6 +130,7 @@ impl RedisRequest<'_> {
     }
 }
 
+/// Converts a RESP value to a RedisRequest.
 fn parse_command(value: RespValue) -> Result<RedisRequest, RedisError> {
     match value {
         RespValue::Array(values) => {

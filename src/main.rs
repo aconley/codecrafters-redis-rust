@@ -15,6 +15,7 @@ use crate::redis_handler::{RedisHandler, RedisReplicationInfo};
 
 const IP: &str = "127.0.0.1";
 
+/// Redis server command line arguments.
 #[derive(Parser)]
 struct RedisArgs {
     #[arg(short, long)]
@@ -51,14 +52,14 @@ async fn main() {
     let replication_info =
         replication_info_from_args(&args).expect("Unable to parse replication_info");
     let handler = get_handler(&args, replication_info).expect("Unable to get handler");
-    
+
     let addr = format!("{}:{}", IP, args.port);
     let listener = TcpListener::bind(addr).await.expect("Error connecting");
 
     loop {
         match listener.accept().await {
             Ok((stream, addr)) => {
-                println!("accepted new connection from {}", addr);
+                println!("accepted new connection from {addr}");
                 let h = handler.clone();
                 tokio::spawn(async move {
                     unsafe {
@@ -68,14 +69,18 @@ async fn main() {
                     }
                 });
             }
-            Err(e) => {
-                println!("error: {}", e);
+            Err(err) => {
+                println!("error: {err}");
             }
         }
     }
 }
 
-fn get_handler(args: &RedisArgs, replication_info: RedisReplicationInfo) -> Result<Arc<RedisHandler>, RedisError> {
+/// Returns a new handler for the redis server.
+fn get_handler(
+    args: &RedisArgs,
+    replication_info: RedisReplicationInfo,
+) -> Result<Arc<RedisHandler>, RedisError> {
     let handler = match &args.dbfilename {
         Some(filepath) => {
             let mut fully_qualified_path = std::path::PathBuf::new();
@@ -90,13 +95,11 @@ fn get_handler(args: &RedisArgs, replication_info: RedisReplicationInfo) -> Resu
                     HashMap::new(),
                 ))
             } else {
-                Arc::new(
-                    RedisHandler::new_from_file(
-                        fully_qualified_path,
-                        replication_info,
-                        args.to_config_dict(),
-                    )?
-                )
+                Arc::new(RedisHandler::new_from_file(
+                    fully_qualified_path,
+                    replication_info,
+                    args.to_config_dict(),
+                )?)
             }
         }
         None => Arc::new(RedisHandler::new_with_contents(
@@ -106,11 +109,11 @@ fn get_handler(args: &RedisArgs, replication_info: RedisReplicationInfo) -> Resu
         )),
     };
 
-    handler
-        .configure_replication()?;
+    handler.configure_replication()?;
     Ok(handler)
 }
 
+/// Creates new replication info from the command line arguments in args.
 fn replication_info_from_args(args: &RedisArgs) -> Result<RedisReplicationInfo, RedisError> {
     let mut replication_info = RedisReplicationInfo::default();
     match args.replicaof {
